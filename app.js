@@ -1018,7 +1018,9 @@ function renderKnowhowRefs() {
   dom.knowhowStatus.textContent =
     state.knowhowMode === "api"
       ? `已从 Knowhow API 召回 TOP ${refs.length} 推荐，请勾选可参考的客户方案。`
-      : `未配置 API Key 或接口不可用，当前显示 TOP ${refs.length} 模拟推荐。`;
+      : state.settings.knowhowApiKey
+        ? `Knowhow API 尚未打通，当前显示 TOP ${refs.length} 模拟推荐。请到平台配置查看连接诊断。`
+        : `未配置 API Key，当前显示 TOP ${refs.length} 模拟推荐。`;
 
   dom.knowhowRefs.innerHTML = refs
     .map(
@@ -1113,12 +1115,16 @@ async function refreshKnowhowRefs(options = {}) {
   const diagnosis = state.diagnosis;
 
   if (!input.customerName && !diagnosis) {
-    state.knowhowRefs = buildMockKnowhowRefs(input, diagnosis);
-    state.knowhowMode = "mock";
-    state.selectedKnowhowIds = new Set();
-    renderKnowhowRefs();
-    showToast("请先填写客户信息或完成客户诊断。");
-    return;
+    input.customerName = "配置连通性测试";
+    input.industry = "房地产与城投";
+    input.customerTags = [{ category: "industry", label: "房地产与城投", source: "测试查询" }];
+    input.regions = ["上海"];
+    input.ownershipTags = ["地方国企"];
+    input.marketTags = [];
+    input.projectStage = "需求调研";
+    input.expectedOutput = "客户诊断报告";
+    input.overallNotes = "测试 Knowhow API 是否可以按行业、地区、场景召回客户案例和 PPT 解决方案。";
+    input.materials = [];
   }
 
   if (!settings.knowhowApiKey) {
@@ -1333,15 +1339,22 @@ function loadSample() {
   showToast("示例信息已填入。");
 }
 
-function saveSettings() {
+function saveSettings(options = {}) {
   state.settings = getConfiguredSettings();
   localStorage.setItem("agentSettings", JSON.stringify(state.settings));
-  setConfigDiagnostic("warn", [
-    "配置已保存，尚未完成连通性测试。",
-    `当前请求地址：${makeKnowhowEndpoint(state.settings.knowhowUrl)}`,
-    state.settings.knowhowApiKey ? "已填写 API Key，可点击“测试推荐”验证。" : "API Key 为空，测试时会进入模拟推荐。",
-  ]);
-  showToast("Knowhow 平台配置已保存。");
+  if (options.silent !== true) {
+    setConfigDiagnostic("warn", [
+      "配置已保存，正在进行 Knowhow 连通性测试...",
+      `当前请求地址：${makeKnowhowEndpoint(state.settings.knowhowUrl)}`,
+      state.settings.knowhowApiKey ? "已填写 API Key，正在验证接口是否可用。" : "API Key 为空，无法调用真实接口。",
+    ]);
+    showToast("Knowhow 平台配置已保存，正在测试连接。");
+  }
+}
+
+async function saveSettingsAndTest() {
+  saveSettings();
+  await refreshKnowhowRefs({ diagnostic: true });
 }
 
 function renderSettings() {
@@ -1448,10 +1461,10 @@ function bindEvents() {
     if (event.target === dom.previewModal) closePreview();
   });
 
-  dom.saveSettingsBtn.addEventListener("click", saveSettings);
+  dom.saveSettingsBtn.addEventListener("click", saveSettingsAndTest);
   dom.refreshKnowhowBtn.addEventListener("click", () => refreshKnowhowRefs());
   dom.testKnowhowBtn.addEventListener("click", () => {
-    saveSettings();
+    saveSettings({ silent: true });
     refreshKnowhowRefs({ diagnostic: true });
   });
 }
