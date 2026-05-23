@@ -867,6 +867,7 @@ function buildKnowhowQuery(input, diagnosis) {
 function buildKnowhowPayload(input, diagnosis, settings) {
   const scenarios = diagnosis?.scenarios || inferScenarios(input);
   const metadataFilters = {};
+  const isConnectivityTest = input.customerName === "Knowhow 配置连通性测试";
 
   if (settings.industryField && input.industry) {
     metadataFilters[settings.industryField] = {
@@ -899,14 +900,14 @@ function buildKnowhowPayload(input, diagnosis, settings) {
     };
   }
 
-  if (settings.qualityFilter) {
+  if (settings.qualityFilter && !isConnectivityTest) {
     metadataFilters.quality = {
       value: settings.qualityFilter,
       operator: "equals",
     };
   }
 
-  if (settings.nodePathFilter) {
+  if (settings.nodePathFilter && !isConnectivityTest) {
     metadataFilters.node_path = {
       value: settings.nodePathFilter.split(/[，,]/).map((item) => item.trim()).filter(Boolean),
       operator: "containsAny",
@@ -927,50 +928,153 @@ function buildKnowhowPayload(input, diagnosis, settings) {
   };
 }
 
+function getNestedValue(source, paths) {
+  for (const path of paths) {
+    const value = path.split(".").reduce((current, key) => current?.[key], source);
+    if (value !== undefined && value !== null && value !== "") return value;
+  }
+  return "";
+}
+
+function findKnowhowRows(payload) {
+  const preferredPaths = [
+    "data.results",
+    "data.items",
+    "data.documents",
+    "data.records",
+    "data.list",
+    "data.hits",
+    "data.chunks",
+    "results",
+    "items",
+    "documents",
+    "records",
+    "list",
+    "hits",
+    "chunks",
+  ];
+
+  for (const path of preferredPaths) {
+    const value = getNestedValue(payload, [path]);
+    if (Array.isArray(value) && value.length) return value;
+  }
+
+  const queue = [payload];
+  const seen = new Set();
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current || typeof current !== "object" || seen.has(current)) continue;
+    seen.add(current);
+
+    if (Array.isArray(current)) {
+      if (current.length && current.some((item) => item && typeof item === "object")) return current;
+      continue;
+    }
+
+    Object.values(current).forEach((value) => {
+      if (value && typeof value === "object") queue.push(value);
+    });
+  }
+
+  return [];
+}
+
+function summarizePayloadShape(payload) {
+  if (!payload || typeof payload !== "object") return "返回值不是对象";
+  return Object.entries(payload)
+    .slice(0, 8)
+    .map(([key, value]) => `${key}:${Array.isArray(value) ? `array(${value.length})` : typeof value}`)
+    .join("，");
+}
+
 function normalizeKnowhowResults(payload, input) {
-  const source =
-    payload?.data?.results ||
-    payload?.data ||
-    payload?.results ||
-    payload?.documents ||
-    payload?.items ||
-    [];
-  const rows = Array.isArray(source) ? source : [];
+  const rows = findKnowhowRows(payload);
 
   return rows.slice(0, 10).map((item, index) => {
-    const metadata = item.metadata || item.meta || {};
+    const document = item.document || item.doc || item.dataset_document || {};
+    const segment = item.segment || item.chunk || item.hit || {};
+    const metadata = item.metadata || item.meta || document.metadata || document.meta || segment.metadata || segment.meta || {};
     const title =
-      item.title ||
-      item.name ||
-      metadata.title ||
-      metadata.file_name ||
-      metadata.filename ||
+      getNestedValue(item, [
+        "title",
+        "name",
+        "document.title",
+        "document.name",
+        "document.file_name",
+        "doc.title",
+        "doc.name",
+        "segment.title",
+        "metadata.title",
+        "metadata.file_name",
+        "metadata.filename",
+        "meta.title",
+        "meta.file_name",
+      ]) ||
       `Knowhow 推荐 ${index + 1}`;
-    const customer = metadata.customer || item.customer || "历史客户";
+    const customer =
+      getNestedValue(item, [
+        "customer",
+        "customer_name",
+        "metadata.customer",
+        "metadata.customer_name",
+        "meta.customer",
+        "document.customer",
+        "document.metadata.customer",
+        "doc.metadata.customer",
+      ]) || "历史客户";
     const scenario =
-      metadata.scenario ||
-      metadata.business_scenario ||
-      metadata.scene ||
-      item.scenario ||
+      getNestedValue(item, [
+        "scenario",
+        "business_scenario",
+        "scene",
+        "metadata.scenario",
+        "metadata.business_scenario",
+        "metadata.scene",
+        "metadata.tags.0",
+        "document.metadata.scenario",
+        "doc.metadata.scenario",
+      ]) ||
       state.diagnosis?.scenarios?.[index % Math.max(state.diagnosis?.scenarios?.length || 1, 1)] ||
       "相似业务场景";
-    const score = item.score || item.rerank_score || item.vector_score || item.similarity;
-    const scoreNumber = score ? Number(score) : 0.92 - index * 0.035;
+    const score =
+      getNestedValue(item, [
+        "score",
+        "rerank_score",
+        "vector_score",
+        "similarity",
+        "metadata.score",
+        "segment.score",
+      ]) || "";
+    const rawScore = score ? Number(score) : 0.92 - index * 0.035;
+    const scoreNumber = rawScore > 1 ? rawScore / 100 : rawScore;
     const previewUrl =
-      metadata.preview_url ||
-      metadata.url ||
-      metadata.link ||
-      item.preview_url ||
-      item.url ||
-      item.link ||
-      "";
+      getNestedValue(item, [
+        "preview_url",
+        "url",
+        "link",
+        "metadata.preview_url",
+        "metadata.url",
+        "metadata.link",
+        "document.preview_url",
+        "document.url",
+        "document.link",
+        "doc.url",
+      ]) || "";
     const snippet =
-      item.content ||
-      item.text ||
-      item.summary ||
-      item.chunk ||
-      metadata.summary ||
-      "已从 Knowhow 平台召回，可作为方案结构、案例表达或 PPT 内容参考。";
+      getNestedValue(item, [
+        "content",
+        "text",
+        "summary",
+        "page_content",
+        "chunk",
+        "segment.content",
+        "segment.text",
+        "hit.content",
+        "document.summary",
+        "document.content",
+        "doc.summary",
+        "metadata.summary",
+      ]) || "已从 Knowhow 平台召回，可作为方案结构、案例表达或 PPT 内容参考。";
 
     return {
       id: `api-${index}-${title}-${customer}`,
@@ -1128,15 +1232,15 @@ async function refreshKnowhowRefs(options = {}) {
   const diagnosis = state.diagnosis;
 
   if (!input.customerName && !diagnosis) {
-    input.customerName = "配置连通性测试";
-    input.industry = "房地产与城投";
-    input.customerTags = [{ category: "industry", label: "房地产与城投", source: "测试查询" }];
-    input.regions = ["上海"];
-    input.ownershipTags = ["地方国企"];
+    input.customerName = "Knowhow 配置连通性测试";
+    input.industry = "零售";
+    input.customerTags = [{ category: "industry", label: "零售", source: "测试查询" }];
+    input.regions = ["华南"];
+    input.ownershipTags = [];
     input.marketTags = [];
     input.projectStage = "需求调研";
     input.expectedOutput = "客户诊断报告";
-    input.overallNotes = "测试 Knowhow API 是否可以按行业、地区、场景召回客户案例和 PPT 解决方案。";
+    input.overallNotes = "零售行业的成功案例有哪些？";
     input.materials = [];
   }
 
@@ -1201,7 +1305,7 @@ async function refreshKnowhowRefs(options = {}) {
       setConfigDiagnostic(refs.length ? "success" : "warn", [
         refs.length ? `连接成功，已从 Knowhow API 召回 ${refs.length} 条推荐。` : "接口已返回，但没有解析到推荐结果。",
         `请求地址：${requestUrl}`,
-        refs.length ? "状态：配置可用。" : "请检查 API 返回结构是否包含 data/results/items/documents 等结果数组。",
+        refs.length ? "状态：配置可用。" : `返回结构摘要：${summarizePayloadShape(data)}`,
       ]);
     }
     if (options.notify !== false) showToast(refs.length ? "Knowhow 推荐已刷新。" : "接口无返回，已显示模拟推荐。");
