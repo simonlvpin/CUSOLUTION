@@ -349,6 +349,14 @@
                 <input id="topK" type="number" min="1" max="500" value="20" />
               </label>
               <label class="field">
+                <span>过滤策略</span>
+                <select id="filterStrategy">
+                  <option value="loose">宽松召回，不加元数据过滤</option>
+                  <option value="tags">仅使用行业/地区/场景标签</option>
+                  <option value="strict">严格过滤，包含质量和目录</option>
+                </select>
+              </label>
+              <label class="field">
                 <span>行业过滤字段</span>
                 <input id="industryField" type="text" value="industry" />
               </label>

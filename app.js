@@ -16,10 +16,11 @@ const state = {
     businessDomain: "project",
     datasets: "both",
     topK: 20,
+    filterStrategy: "loose",
     industryField: "industry",
     scenarioField: "tags",
-    qualityFilter: "严选",
-    nodePathFilter: "宣传物料",
+    qualityFilter: "",
+    nodePathFilter: "",
     knowhowRule:
       "根据客户名称、AI 识别出的行业标签、地区标签、企业属性、需求场景和痛点关键词，调用 POST api/v1/retrieve，召回公司历史客户、场景案例、PPT 解决方案和最佳实践，再由大模型提炼可复用方案结构。",
   },
@@ -123,6 +124,7 @@ const dom = {
   businessDomain: document.querySelector("#businessDomain"),
   datasets: document.querySelector("#datasets"),
   topK: document.querySelector("#topK"),
+  filterStrategy: document.querySelector("#filterStrategy"),
   industryField: document.querySelector("#industryField"),
   scenarioField: document.querySelector("#scenarioField"),
   qualityFilter: document.querySelector("#qualityFilter"),
@@ -814,6 +816,7 @@ function getConfiguredSettings() {
     businessDomain: dom.businessDomain.value || state.settings.businessDomain,
     datasets: dom.datasets.value || state.settings.datasets,
     topK: Number(dom.topK.value || state.settings.topK || 20),
+    filterStrategy: dom.filterStrategy.value || state.settings.filterStrategy || "loose",
     industryField: dom.industryField.value.trim() || state.settings.industryField,
     scenarioField: dom.scenarioField.value.trim() || state.settings.scenarioField,
     qualityFilter: dom.qualityFilter.value.trim(),
@@ -868,15 +871,16 @@ function buildKnowhowPayload(input, diagnosis, settings) {
   const scenarios = diagnosis?.scenarios || inferScenarios(input);
   const metadataFilters = {};
   const isConnectivityTest = input.customerName === "Knowhow 配置连通性测试";
+  const strategy = settings.filterStrategy || "loose";
 
-  if (settings.industryField && input.industry) {
+  if (strategy !== "loose" && settings.industryField && input.industry) {
     metadataFilters[settings.industryField] = {
       value: [input.industry],
       operator: "containsAny",
     };
   }
 
-  if (input.regions?.length) {
+  if (strategy !== "loose" && input.regions?.length) {
     metadataFilters.tags = metadataFilters.tags || {
       value: [],
       operator: "containsAny",
@@ -884,7 +888,7 @@ function buildKnowhowPayload(input, diagnosis, settings) {
     metadataFilters.tags.value.push(...input.regions);
   }
 
-  if (input.ownershipTags?.length) {
+  if (strategy !== "loose" && input.ownershipTags?.length) {
     metadataFilters.tags = metadataFilters.tags || {
       value: [],
       operator: "containsAny",
@@ -892,7 +896,7 @@ function buildKnowhowPayload(input, diagnosis, settings) {
     metadataFilters.tags.value.push(...input.ownershipTags);
   }
 
-  if (settings.scenarioField && scenarios.length) {
+  if (strategy !== "loose" && settings.scenarioField && scenarios.length) {
     const existing = metadataFilters[settings.scenarioField]?.value || [];
     metadataFilters[settings.scenarioField] = {
       value: Array.from(new Set([...existing, ...scenarios])),
@@ -900,14 +904,14 @@ function buildKnowhowPayload(input, diagnosis, settings) {
     };
   }
 
-  if (settings.qualityFilter && !isConnectivityTest) {
+  if (strategy === "strict" && settings.qualityFilter && !isConnectivityTest) {
     metadataFilters.quality = {
       value: settings.qualityFilter,
       operator: "equals",
     };
   }
 
-  if (settings.nodePathFilter && !isConnectivityTest) {
+  if (strategy === "strict" && settings.nodePathFilter && !isConnectivityTest) {
     metadataFilters.node_path = {
       value: settings.nodePathFilter.split(/[，,]/).map((item) => item.trim()).filter(Boolean),
       operator: "containsAny",
@@ -925,6 +929,15 @@ function buildKnowhowPayload(input, diagnosis, settings) {
       rerank_blend_weight: 0.3,
     },
     metadata_filters: metadataFilters,
+  };
+}
+
+function makeLooseSettings(settings) {
+  return {
+    ...settings,
+    filterStrategy: "loose",
+    qualityFilter: "",
+    nodePathFilter: "",
   };
 }
 
@@ -1276,34 +1289,49 @@ async function refreshKnowhowRefs(options = {}) {
   }
 
   dom.knowhowStatus.textContent = "正在调用 Knowhow API 检索...";
-  const payload = buildKnowhowPayload(input, diagnosis, settings);
+  let payload = buildKnowhowPayload(input, diagnosis, settings);
   const requestUrl = getKnowhowRequestUrl(settings);
 
   try {
-    const response = await fetch(requestUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${settings.knowhowApiKey}`,
-        "X-Knowhow-Base-Url": settings.knowhowUrl,
-      },
-      body: JSON.stringify(payload),
-    });
+    const callKnowhow = async (body) => {
+      const response = await fetch(requestUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${settings.knowhowApiKey}`,
+          "X-Knowhow-Base-Url": settings.knowhowUrl,
+        },
+        body: JSON.stringify(body),
+      });
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => "");
-      throw new Error(`HTTP ${response.status}${errorText ? `：${errorText.slice(0, 120)}` : ""}`);
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        throw new Error(`HTTP ${response.status}${errorText ? `：${errorText.slice(0, 120)}` : ""}`);
+      }
+
+      return response.json();
+    };
+
+    let data = await callKnowhow(payload);
+    let refs = normalizeKnowhowResults(data, input);
+    let fallbackUsed = false;
+
+    if (!refs.length && settings.filterStrategy !== "loose") {
+      payload = buildKnowhowPayload(input, diagnosis, makeLooseSettings(settings));
+      data = await callKnowhow(payload);
+      refs = normalizeKnowhowResults(data, input);
+      fallbackUsed = true;
     }
 
-    const data = await response.json();
-    const refs = normalizeKnowhowResults(data, input);
     state.knowhowRefs = refs.length ? refs : buildMockKnowhowRefs(input, diagnosis);
     state.knowhowMode = refs.length ? "api" : "mock";
     state.selectedKnowhowIds = new Set();
     renderKnowhowRefs();
     if (options.diagnostic) {
       setConfigDiagnostic(refs.length ? "success" : "warn", [
-        refs.length ? `连接成功，已从 Knowhow API 召回 ${refs.length} 条推荐。` : "接口已返回，但没有解析到推荐结果。",
+        refs.length
+          ? `连接成功，已从 Knowhow API 召回 ${refs.length} 条推荐。${fallbackUsed ? "原过滤条件无结果，已自动改用宽松召回。" : ""}`
+          : "接口已返回，但没有解析到推荐结果。",
         `请求地址：${requestUrl}`,
         refs.length ? "状态：配置可用。" : `返回结构摘要：${summarizePayloadShape(data)}`,
       ]);
@@ -1500,6 +1528,7 @@ function renderSettings() {
   dom.businessDomain.value = state.settings.businessDomain;
   dom.datasets.value = state.settings.datasets;
   dom.topK.value = state.settings.topK;
+  dom.filterStrategy.value = state.settings.filterStrategy || "loose";
   dom.industryField.value = state.settings.industryField;
   dom.scenarioField.value = state.settings.scenarioField;
   dom.qualityFilter.value = state.settings.qualityFilter || "";
