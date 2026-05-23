@@ -878,6 +878,36 @@ button {
   line-height: 1.5;
 }
 
+.tool-status {
+  margin-top: 12px;
+  min-height: 38px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: #fbfcfb;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.tool-status.working {
+  color: var(--green-dark);
+  border-color: #b8c9c0;
+  background: #eef6f2;
+}
+
+.tool-status.success {
+  color: #1f6654;
+  border-color: #9bc4b6;
+  background: #edf8f3;
+}
+
+.tool-status.error {
+  color: #8b3b29;
+  border-color: #edc6ba;
+  background: #fff8f6;
+}
+
 .reference-box {
   padding: 15px;
   border: 1px solid var(--line);
@@ -1017,6 +1047,12 @@ button {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fbfcfb;
+}
+
+.integration-divider {
+  height: 1px;
+  margin: 28px 0;
+  background: var(--line);
 }
 
 .config-diagnostics p {

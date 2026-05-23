@@ -1,3 +1,31 @@
+const defaultSettings = {
+  knowhowUrl: "https://digitchat.fanruan.com/dataset/",
+  knowhowAuth: "API Token",
+  knowhowRequestMode: "direct",
+  knowhowProxyUrl: "",
+  knowhowApiKey: "",
+  businessDomain: "project",
+  datasets: "both",
+  topK: 20,
+  filterStrategy: "loose",
+  industryField: "industry",
+  scenarioField: "tags",
+  qualityFilter: "",
+  nodePathFilter: "",
+  materialAgentUrl: "",
+  materialAgentApiKey: "",
+  materialAgentPrompt:
+    "请充分阅读上传材料，输出客户项目建设背景、重点诉求、痛点目标、需求场景、风险挑战、关键词、逐份材料摘要和可引用证据。请返回 JSON，字段可包含 summary、keywords、scenarios、pains、risks、evidence、materials。",
+  pptToolMode: "browser",
+  pptToolUrl: "",
+  pptToolApiKey: "",
+  pptToolTemplate: "",
+  knowhowRule:
+    "根据客户名称、AI 识别出的行业标签、地区标签、企业属性、需求场景和痛点关键词，调用 POST api/v1/retrieve，召回公司历史客户、场景案例、PPT 解决方案和最佳实践，再由大模型提炼可复用方案结构。",
+};
+
+const savedSettings = JSON.parse(localStorage.getItem("agentSettings") || "null") || {};
+
 const state = {
   materials: [],
   diagnosis: null,
@@ -7,23 +35,8 @@ const state = {
   knowhowMode: "mock",
   selectedKnowhowIds: new Set(),
   customerTags: [],
-  settings: JSON.parse(localStorage.getItem("agentSettings") || "null") || {
-    knowhowUrl: "https://digitchat.fanruan.com/dataset/",
-    knowhowAuth: "API Token",
-    knowhowRequestMode: "direct",
-    knowhowProxyUrl: "",
-    knowhowApiKey: "",
-    businessDomain: "project",
-    datasets: "both",
-    topK: 20,
-    filterStrategy: "loose",
-    industryField: "industry",
-    scenarioField: "tags",
-    qualityFilter: "",
-    nodePathFilter: "",
-    knowhowRule:
-      "根据客户名称、AI 识别出的行业标签、地区标签、企业属性、需求场景和痛点关键词，调用 POST api/v1/retrieve，召回公司历史客户、场景案例、PPT 解决方案和最佳实践，再由大模型提炼可复用方案结构。",
-  },
+  materialAnalysis: null,
+  settings: { ...defaultSettings, ...savedSettings },
 };
 
 const scenarioLibrary = {
@@ -109,6 +122,8 @@ const dom = {
   chapterRationale: document.querySelector("#chapterRationale"),
   globalProposalFeedback: document.querySelector("#globalProposalFeedback"),
   refineDeckBtn: document.querySelector("#refineDeckBtn"),
+  generatePptBtn: document.querySelector("#generatePptBtn"),
+  pptGenerationStatus: document.querySelector("#pptGenerationStatus"),
   knowhowRefs: document.querySelector("#knowhowRefs"),
   knowhowStatus: document.querySelector("#knowhowStatus"),
   refreshKnowhowBtn: document.querySelector("#refreshKnowhowBtn"),
@@ -129,6 +144,13 @@ const dom = {
   scenarioField: document.querySelector("#scenarioField"),
   qualityFilter: document.querySelector("#qualityFilter"),
   nodePathFilter: document.querySelector("#nodePathFilter"),
+  materialAgentUrl: document.querySelector("#materialAgentUrl"),
+  materialAgentApiKey: document.querySelector("#materialAgentApiKey"),
+  materialAgentPrompt: document.querySelector("#materialAgentPrompt"),
+  pptToolMode: document.querySelector("#pptToolMode"),
+  pptToolUrl: document.querySelector("#pptToolUrl"),
+  pptToolApiKey: document.querySelector("#pptToolApiKey"),
+  pptToolTemplate: document.querySelector("#pptToolTemplate"),
   knowhowRule: document.querySelector("#knowhowRule"),
   saveSettingsBtn: document.querySelector("#saveSettingsBtn"),
   testKnowhowBtn: document.querySelector("#testKnowhowBtn"),
@@ -255,7 +277,8 @@ function addMaterial(file) {
     type: file ? detectType(file.name) : "其他",
     file: file || null,
     extractedText: "",
-    parseStatus: file ? "待解析" : "手动描述",
+    llmInsight: null,
+    parseStatus: file ? "待大模型分析" : "手动描述",
     description: "",
   });
   renderMaterials();
@@ -360,44 +383,127 @@ function finishProgress() {
   });
 }
 
-function canReadFileText(material) {
-  const fileName = material.name.toLowerCase();
-  return [".txt", ".csv", ".md", ".json", ".log"].some((ext) => fileName.endsWith(ext));
+function buildMaterialAgentPayload(input, settings) {
+  return {
+    prompt: settings.materialAgentPrompt,
+    customer: {
+      name: input.customerName,
+      industry: input.industry,
+      tags: input.customerTags,
+      regions: input.regions,
+      ownershipTags: input.ownershipTags,
+      marketTags: input.marketTags,
+      projectStage: input.projectStage,
+      expectedOutput: input.expectedOutput,
+      overallNotes: input.overallNotes,
+    },
+    materials: input.materials.map((material) => ({
+      id: material.id,
+      name: material.name,
+      type: material.type,
+      size: material.size,
+      description: material.description,
+    })),
+    expected_schema: {
+      summary: "客户材料整体洞察",
+      keywords: ["关键词"],
+      scenarios: ["需求场景"],
+      pains: ["痛点/诉求/目标"],
+      risks: ["潜在风险"],
+      evidence: ["可引用材料证据"],
+      materials: [
+        {
+          id: "材料 id",
+          summary: "逐份材料摘要",
+          keywords: ["材料关键词"],
+          scenarios: ["材料需求场景"],
+          evidence: ["材料证据"],
+        },
+      ],
+    },
+  };
 }
 
-function readFileAsText(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(reader.error || new Error("文件读取失败"));
-    reader.readAsText(file, "utf-8");
-  });
-}
-
-async function parseMaterials(materials) {
-  for (const material of materials) {
-    if (!material.file) {
-      material.extractedText = material.description;
-      material.parseStatus = "基于描述分析";
-      continue;
-    }
-
-    if (!canReadFileText(material)) {
-      material.extractedText = "";
-      material.parseStatus = "需后端解析";
-      continue;
-    }
-
+function normalizeMaterialAgentResult(payload = {}) {
+  const data = payload.data || payload.result || payload.output || payload;
+  if (typeof data === "string") {
     try {
-      material.extractedText = (await readFileAsText(material.file)).slice(0, 12000);
-      material.parseStatus = material.extractedText ? "已解析文本" : "未读取到文本";
+      return JSON.parse(data);
     } catch (error) {
-      material.extractedText = "";
-      material.parseStatus = `解析失败：${error.message}`;
+      return { summary: data };
     }
   }
+  return data && typeof data === "object" ? data : {};
+}
+
+async function analyzeMaterialsWithLLM(input) {
+  const settings = state.settings;
+  const endpoint = settings.materialAgentUrl?.trim();
+
+  if (!endpoint) {
+    input.materials.forEach((material) => {
+      material.extractedText = "";
+      material.llmInsight = {
+        summary: material.description,
+        keywords: extractKeywords(material.description).slice(0, 5),
+        evidence: [`材料描述：${material.description}`],
+      };
+      material.parseStatus = "未配置大模型 Agent，暂按材料描述分析";
+    });
+    renderMaterials();
+    const fallbackResult = {
+      summary: "尚未配置材料分析大模型 Agent，本次诊断仅使用客户名称、材料描述和售前整体判断。正式场景需由大模型服务读取 Word/PPT/PDF/Excel 正文后返回结构化洞察。",
+      keywords: extractKeywords(`${input.overallNotes} ${input.materials.map((material) => material.description).join(" ")}`),
+      scenarios: inferScenarios(input),
+      pains: [],
+      risks: ["未接入材料分析大模型 Agent 时，上传文件正文未被充分阅读，诊断可信度会受影响。"],
+      evidence: input.materials.map((material) => `${material.type}《${material.name}》：${material.description}`),
+      materials: input.materials.map((material) => material.llmInsight),
+      source: "description-only",
+    };
+    showToast("未配置材料分析大模型 Agent，暂按描述生成诊断。");
+    return fallbackResult;
+  }
+
+  const form = new FormData();
+  form.append("payload", JSON.stringify(buildMaterialAgentPayload(input, settings)));
+  input.materials.forEach((material) => {
+    if (material.file) form.append("files", material.file, material.name);
+  });
+
+  const headers = {};
+  if (settings.materialAgentApiKey) {
+    headers.Authorization = `Bearer ${settings.materialAgentApiKey}`;
+  }
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: form,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    throw new Error(`材料分析 Agent HTTP ${response.status}${errorText ? `：${errorText.slice(0, 120)}` : ""}`);
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  const raw = contentType.includes("application/json") ? await response.json() : await response.text();
+  const result = normalizeMaterialAgentResult(raw);
+  const materialResults = Array.isArray(result.materials) ? result.materials : [];
+
+  input.materials.forEach((material, index) => {
+    const insight =
+      materialResults.find((item) => item.id === material.id || item.name === material.name) ||
+      materialResults[index] ||
+      {};
+    material.llmInsight = insight;
+    material.extractedText = [insight.summary, insight.evidence?.join("；")].filter(Boolean).join("；");
+    material.parseStatus = insight.summary ? "大模型已分析" : "大模型已调用，未返回逐份摘要";
+  });
 
   renderMaterials();
+  return { ...result, source: "llm-agent" };
 }
 
 function getAnalysisCorpus(input) {
@@ -440,12 +546,27 @@ function extractKeywords(corpus) {
   return Array.from(new Set([...hits, ...fallback])).slice(0, 12);
 }
 
-function buildEvidence(input) {
+function normalizeArray(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.filter(Boolean).map((item) => String(item));
+  if (typeof value === "string") {
+    return value
+      .split(/[；;\n]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function buildEvidence(input, materialAnalysis = state.materialAnalysis) {
+  const llmEvidence = normalizeArray(materialAnalysis?.evidence);
+  if (llmEvidence.length) return llmEvidence.slice(0, 8);
+
   const evidence = [];
 
   input.materials.forEach((material) => {
-    const source = material.extractedText ? "已读取文件文本" : material.parseStatus || "基于材料描述";
-    const text = material.extractedText || material.description;
+    const source = material.parseStatus || "基于材料描述";
+    const text = material.llmInsight?.summary || material.extractedText || material.description;
     evidence.push(`${material.type}《${material.name}》：${source}，关键信息为「${text.slice(0, 86)}${text.length > 86 ? "..." : ""}」。`);
   });
 
@@ -496,18 +617,23 @@ function buildCoreIssues(input, keywords, scenarios) {
 
 function buildMaterialInsights(input) {
   return input.materials.map((material) => {
-    const text = `${material.description} ${material.extractedText || ""}`;
+    const llmInsight = material.llmInsight || {};
+    const insightKeywords = normalizeArray(llmInsight.keywords);
+    const text = `${material.description} ${llmInsight.summary || ""} ${material.extractedText || ""}`;
     let level = "中";
     if (keywordHit(text, ["口径", "风险", "问题", "不一致", "分散", "周期长", "人工"])) level = "高";
     if (keywordHit(text, ["规划", "目标", "希望", "提升"])) level = level === "高" ? "高" : "中";
 
-    const tags = extractKeywords(text).slice(0, 4);
+    const tags = Array.from(new Set([...insightKeywords, ...extractKeywords(text)])).slice(0, 4);
     return {
       level,
       title: material.name,
       source: material.parseStatus || "基于材料描述",
       tags,
-      summary: text.slice(0, 120) || "暂无正文内容，建议补充材料描述或接入后端解析服务。",
+      summary:
+        llmInsight.summary ||
+        text.slice(0, 120) ||
+        "暂无大模型材料洞察，建议补充材料描述或配置材料分析 Agent。",
     };
   });
 }
@@ -519,6 +645,7 @@ function keywordHit(text, keywords) {
 function inferScenarios(input) {
   const allText = getAnalysisCorpus(input);
   const scenarios = new Set();
+  normalizeArray(state.materialAnalysis?.scenarios).forEach((scenario) => scenarios.add(scenario));
   const candidates = scenarioLibrary[input.industry] || scenarioLibrary.制造业;
   (input.customerTags || [])
     .filter((tag) => tag.category === "scenario")
@@ -548,39 +675,46 @@ function buildDiagnosis(input) {
   const scenarios = inferScenarios(input);
   const tagText = input.customerTags.map((tag) => tag.label).join("、");
   const corpus = getAnalysisCorpus(input);
-  const keywords = extractKeywords(corpus);
-  const evidence = buildEvidence(input);
+  const analysis = state.materialAnalysis || {};
+  const llmKeywords = normalizeArray(analysis.keywords);
+  const keywords = Array.from(new Set([...llmKeywords, ...extractKeywords(corpus)])).slice(0, 12);
+  const evidence = buildEvidence(input, analysis);
   const coreIssues = buildCoreIssues(input, keywords, scenarios);
   const materialInsights = buildMaterialInsights(input);
   const materialSummary = input.materials
     .map(
       (material) =>
-        `${material.type}《${material.name}》：${material.description}${
-          material.extractedText ? `；文件正文摘录：${material.extractedText.slice(0, 90)}` : ""
+        `${material.type}《${material.name}》：${material.llmInsight?.summary || material.description}${
+          material.extractedText ? `；大模型证据摘录：${material.extractedText.slice(0, 90)}` : ""
         }`,
     )
     .join("；");
+  const llmPains = normalizeArray(analysis.pains);
+  const llmRisks = normalizeArray(analysis.risks);
+  const llmSummary = analysis.summary ? `大模型材料分析认为：${analysis.summary}。` : "";
 
   return {
-    background: `${input.customerName}处于「${input.projectStage}」阶段，AI 初步识别客户画像为：${tagText}。结合${input.industry}相关场景和已收集材料，项目大概率由经营管理精细化、数据口径统一、跨部门协同效率提升等诉求触发。材料显示：${materialSummary}。售前补充信息进一步说明客户希望把分散经验沉淀为可持续的管理与分析能力。`,
+    background: `${input.customerName}处于「${input.projectStage}」阶段，AI 初步识别客户画像为：${tagText}。结合${input.industry}相关场景和已收集材料，项目大概率由经营管理精细化、数据口径统一、跨部门协同效率提升等诉求触发。${llmSummary}材料显示：${materialSummary}。售前补充信息进一步说明客户希望把分散经验沉淀为可持续的管理与分析能力。`,
     coreIssues,
     keywords,
     materialInsights,
     pains: [
+      ...llmPains,
       `材料关键词集中在${keywords.slice(0, 5).join("、")}，说明客户关注点不只是系统建设，还包括业务管理闭环。`,
       "关键业务指标、数据口径和管理报表存在分散或不一致风险，影响管理层快速判断。",
       `客户诉求集中在${scenarios.join("、")}等场景，需要把业务目标转化为可落地的系统能力。`,
       "一线业务、IT、管理层之间对优先级和验收标准可能尚未完全对齐。",
       "现有材料更多描述现象和期望，需要继续确认业务流程、数据来源、权限边界和历史系统约束。",
-    ],
+    ].slice(0, 8),
     scenarios,
     evidence,
     risks: [
+      ...llmRisks,
       "需求边界持续扩张，导致方案范围、周期和报价难以稳定。",
       "客户内部数据质量、系统接口和历史报表口径不清，可能影响演示效果和项目交付节奏。",
       "关键决策人与实际使用部门关注点不同，若缺少统一场景故事线，方案容易被评价为泛化。",
       "缺少标杆案例或行业 Knowhow 支撑时，客户可能对投入产出和落地可信度存疑。",
-    ],
+    ].slice(0, 8),
     strategies: [
       "用一次需求澄清会确认项目发起背景、决策链、预算窗口、关键场景和验收标准。",
       `围绕${scenarios[0]}先做高价值样板场景，形成可演示的业务闭环和指标体系。`,
@@ -657,7 +791,7 @@ function buildProposal(input, diagnosis, feedback = "") {
   const selectedRefs = getSelectedKnowhowRefs();
   const referenceText = selectedRefs.length
     ? `本版方案参考了 ${selectedRefs.map((ref) => `${ref.customerName}《${ref.pptTitle}》`).join("、")}。`
-    : "本版方案尚未勾选 Knowhow 参考案例。";
+    : "本版方案尚未勾选 Knowhow 参考材料。";
   const feedbackNote = feedbackText ? `已吸收综合调整意见：${feedbackText}` : "基于当前诊断和已选参考方案生成。";
   const materialProof = diagnosis.evidence.slice(0, 3);
   const coreScenarios = diagnosis.scenarios.slice(0, Math.max(3, Math.min(diagnosis.scenarios.length, 5)));
@@ -712,7 +846,7 @@ function buildProposal(input, diagnosis, feedback = "") {
         `能力建设：设计${item}驾驶舱、专题分析、指标预警、问题追踪和汇报输出能力。`,
         selectedRefs[index]
           ? `参考案例：借鉴${selectedRefs[index].customerName}《${selectedRefs[index].pptTitle}》中关于${selectedRefs[index].businessScenario}的结构表达。`
-          : "参考案例：待进一步选中 Knowhow PPT 后补充标杆实践。",
+          : "参考案例：待进一步选中 Knowhow 参考材料后补充标杆实践。",
         "落地闭环：明确数据来源、责任部门、使用频率、输出材料和阶段验收标准。",
       ],
       rationale:
@@ -806,6 +940,482 @@ function renderChapterRationale(index) {
   `;
 }
 
+function setPptStatus(message, type = "info") {
+  if (!dom.pptGenerationStatus) return;
+  dom.pptGenerationStatus.textContent = message;
+  dom.pptGenerationStatus.className = `tool-status ${type}`;
+}
+
+function safeFileName(value) {
+  return String(value || "solution")
+    .replace(/[\\/:*?"<>|]/g, "")
+    .replace(/\s+/g, "_")
+    .slice(0, 60);
+}
+
+function splitTextForPpt(items, maxItems = 7) {
+  return normalizeArray(items).slice(0, maxItems).map((item) => item.length > 86 ? `${item.slice(0, 86)}...` : item);
+}
+
+function xmlEscape(value = "") {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function emu(inches) {
+  return Math.round(inches * 914400);
+}
+
+function makeTextShape(id, text, x, y, w, h, options = {}) {
+  const fontSize = Math.round((options.fontSize || 14) * 100);
+  const color = options.color || "31423D";
+  const bold = options.bold ? ' b="1"' : "";
+  const paragraphs = normalizeArray(text).length ? normalizeArray(text) : [String(text || "")];
+  const paragraphXml = paragraphs
+    .map((item) => {
+      const bullet = options.bullet ? '<a:pPr marL="228600" indent="-171450"><a:buChar char="•"/></a:pPr>' : '<a:pPr/>';
+      return `<a:p>${bullet}<a:r><a:rPr lang="zh-CN" sz="${fontSize}"${bold}><a:solidFill><a:srgbClr val="${color}"/></a:solidFill><a:latin typeface="Microsoft YaHei"/><a:ea typeface="Microsoft YaHei"/></a:rPr><a:t>${xmlEscape(item)}</a:t></a:r><a:endParaRPr lang="zh-CN" sz="${fontSize}"/></a:p>`;
+    })
+    .join("");
+
+  return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Text ${id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="${emu(x)}" y="${emu(y)}"/><a:ext cx="${emu(w)}" cy="${emu(h)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr wrap="square" rtlCol="0"><a:spAutoFit/></a:bodyPr><a:lstStyle/>${paragraphXml}</p:txBody></p:sp>`;
+}
+
+function makeRectShape(id, x, y, w, h, fill) {
+  return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Accent ${id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="${emu(x)}" y="${emu(y)}"/><a:ext cx="${emu(w)}" cy="${emu(h)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="${fill}"/></a:solidFill><a:ln><a:noFill/></a:ln></p:spPr></p:sp>`;
+}
+
+function makeBuiltInSlideXml(slide, index, total) {
+  const bg = index % 2 === 0 ? "F8FBFA" : "FFFFFF";
+  const bodyItems =
+    slide.type === "paragraph"
+      ? normalizeArray(slide.content).join("\n\n")
+      : splitTextForPpt(slide.content, 7);
+  const shapes = [
+    makeRectShape(2, 0, 0, 13.333, 0.28, "83CBB7"),
+    makeTextShape(3, String(index + 1).padStart(2, "0"), 0.52, 0.48, 0.55, 0.32, {
+      fontSize: 13,
+      color: "B88B26",
+      bold: true,
+    }),
+    makeTextShape(4, slide.chapter || "方案", 1.16, 0.49, 1.5, 0.28, {
+      fontSize: 10,
+      color: "27745F",
+      bold: true,
+    }),
+    makeTextShape(5, slide.title, 0.72, 1.02, 11.8, 0.62, {
+      fontSize: 24,
+      color: "17201F",
+      bold: true,
+    }),
+    makeTextShape(6, bodyItems, 0.9, 1.9, 11.2, 3.78, {
+      fontSize: slide.type === "paragraph" ? 15 : 14,
+      color: "31423D",
+      bullet: slide.type !== "paragraph",
+    }),
+    makeTextShape(7, `写作思路：${slide.rationale || "围绕客户材料、诊断结论和参考案例展开。"}`, 0.72, 6.25, 11.9, 0.42, {
+      fontSize: 8.5,
+      color: "68706D",
+    }),
+    makeTextShape(8, `${index + 1} / ${total}`, 11.75, 6.92, 0.9, 0.18, {
+      fontSize: 8,
+      color: "68706D",
+    }),
+  ].join("");
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="${bg}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>${shapes}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`;
+}
+
+function makeSlideMasterXml() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld><p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/><p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst><p:txStyles><p:titleStyle/><p:bodyStyle/><p:otherStyle/></p:txStyles></p:sldMaster>`;
+}
+
+function makeSlideLayoutXml() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank" preserve="1"><p:cSld name="Blank"><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>`;
+}
+
+function makeThemeXml() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="CUSOLUTION"><a:themeElements><a:clrScheme name="CUSOLUTION"><a:dk1><a:srgbClr val="17201F"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="31423D"/></a:dk2><a:lt2><a:srgbClr val="F8FBFA"/></a:lt2><a:accent1><a:srgbClr val="83CBB7"/></a:accent1><a:accent2><a:srgbClr val="2F6F9F"/></a:accent2><a:accent3><a:srgbClr val="B88B26"/></a:accent3><a:accent4><a:srgbClr val="C95B44"/></a:accent4><a:accent5><a:srgbClr val="68706D"/></a:accent5><a:accent6><a:srgbClr val="E2EFE9"/></a:accent6><a:hlink><a:srgbClr val="2F6F9F"/></a:hlink><a:folHlink><a:srgbClr val="27745F"/></a:folHlink></a:clrScheme><a:fontScheme name="CUSOLUTION"><a:majorFont><a:latin typeface="Microsoft YaHei"/><a:ea typeface="Microsoft YaHei"/><a:cs typeface="Microsoft YaHei"/></a:majorFont><a:minorFont><a:latin typeface="Microsoft YaHei"/><a:ea typeface="Microsoft YaHei"/><a:cs typeface="Microsoft YaHei"/></a:minorFont></a:fontScheme><a:fmtScheme name="CUSOLUTION"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements><a:objectDefaults/><a:extraClrSchemeLst/></a:theme>`;
+}
+
+function makePresentationXml(slides) {
+  const slideIds = slides
+    .map((_, index) => `<p:sldId id="${256 + index}" r:id="rId${index + 2}"/>`)
+    .join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst><p:sldIdLst>${slideIds}</p:sldIdLst><p:sldSz cx="12192000" cy="6858000" type="wide"/><p:notesSz cx="6858000" cy="9144000"/><p:defaultTextStyle/></p:presentation>`;
+}
+
+function makePresentationRels(slides) {
+  const slideRels = slides
+    .map((_, index) => `<Relationship Id="rId${index + 2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${index + 1}.xml"/>`)
+    .join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/>${slideRels}</Relationships>`;
+}
+
+function makeContentTypes(slides) {
+  const slideTypes = slides
+    .map((_, index) => `<Override PartName="/ppt/slides/slide${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`)
+    .join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/><Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/><Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/><Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>${slideTypes}</Types>`;
+}
+
+function makeCoreXml(title) {
+  const now = new Date().toISOString();
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>${xmlEscape(title)}</dc:title><dc:creator>CUSOLUTION</dc:creator><cp:lastModifiedBy>CUSOLUTION</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified></cp:coreProperties>`;
+}
+
+function makeAppXml(slideCount) {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>CUSOLUTION PPT Tool</Application><PresentationFormat>宽屏</PresentationFormat><Slides>${slideCount}</Slides><Company>TOB Solution Center</Company></Properties>`;
+}
+
+function makeRelXml(type, target) {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${type}" Target="${target}"/></Relationships>`;
+}
+
+function makePptxFiles(slides, title) {
+  const files = {
+    "[Content_Types].xml": makeContentTypes(slides),
+    "_rels/.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`,
+    "docProps/core.xml": makeCoreXml(title),
+    "docProps/app.xml": makeAppXml(slides.length),
+    "ppt/presentation.xml": makePresentationXml(slides),
+    "ppt/_rels/presentation.xml.rels": makePresentationRels(slides),
+    "ppt/slideMasters/slideMaster1.xml": makeSlideMasterXml(),
+    "ppt/slideMasters/_rels/slideMaster1.xml.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/></Relationships>`,
+    "ppt/slideLayouts/slideLayout1.xml": makeSlideLayoutXml(),
+    "ppt/slideLayouts/_rels/slideLayout1.xml.rels": makeRelXml("http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster", "../slideMasters/slideMaster1.xml"),
+    "ppt/theme/theme1.xml": makeThemeXml(),
+  };
+
+  slides.forEach((slide, index) => {
+    files[`ppt/slides/slide${index + 1}.xml`] = makeBuiltInSlideXml(slide, index, slides.length);
+    files[`ppt/slides/_rels/slide${index + 1}.xml.rels`] = makeRelXml("http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout", "../slideLayouts/slideLayout1.xml");
+  });
+
+  return files;
+}
+
+function makeCrcTable() {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return table;
+}
+
+const crcTable = makeCrcTable();
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  bytes.forEach((byte) => {
+    crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  });
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function push16(target, value) {
+  target.push(value & 0xff, (value >>> 8) & 0xff);
+}
+
+function push32(target, value) {
+  target.push(value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff);
+}
+
+function makeZipBlob(files) {
+  const encoder = new TextEncoder();
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+  const now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | Math.floor(now.getSeconds() / 2);
+  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+
+  Object.entries(files).forEach(([name, content]) => {
+    const nameBytes = encoder.encode(name);
+    const data = encoder.encode(content);
+    const crc = crc32(data);
+    const local = [];
+    push32(local, 0x04034b50);
+    push16(local, 20);
+    push16(local, 0x0800);
+    push16(local, 0);
+    push16(local, dosTime);
+    push16(local, dosDate);
+    push32(local, crc);
+    push32(local, data.length);
+    push32(local, data.length);
+    push16(local, nameBytes.length);
+    push16(local, 0);
+    chunks.push(new Uint8Array(local), nameBytes, data);
+
+    const header = [];
+    push32(header, 0x02014b50);
+    push16(header, 20);
+    push16(header, 20);
+    push16(header, 0x0800);
+    push16(header, 0);
+    push16(header, dosTime);
+    push16(header, dosDate);
+    push32(header, crc);
+    push32(header, data.length);
+    push32(header, data.length);
+    push16(header, nameBytes.length);
+    push16(header, 0);
+    push16(header, 0);
+    push16(header, 0);
+    push16(header, 0);
+    push32(header, 0);
+    push32(header, offset);
+    central.push(new Uint8Array(header), nameBytes);
+    offset += local.length + nameBytes.length + data.length;
+  });
+
+  const centralSize = central.reduce((sum, item) => sum + item.length, 0);
+  const end = [];
+  push32(end, 0x06054b50);
+  push16(end, 0);
+  push16(end, 0);
+  push16(end, Object.keys(files).length);
+  push16(end, Object.keys(files).length);
+  push32(end, centralSize);
+  push32(end, offset);
+  push16(end, 0);
+
+  return new Blob([...chunks, ...central, new Uint8Array(end)], {
+    type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  });
+}
+
+async function generatePptWithBuiltInTool() {
+  const fileName = `${safeFileName(dom.customerName.value)}_解决方案_${new Date().toISOString().slice(0, 10)}.pptx`;
+  const title = `${dom.customerName.value || "客户"}解决方案`;
+  const files = makePptxFiles(state.proposal.slides, title);
+  downloadBlob(makeZipBlob(files), fileName);
+  return { fileName, mode: "built-in" };
+}
+
+function addPptSlide(pptx, slide, index, total) {
+  const page = pptx.addSlide();
+  const bg = index % 2 === 0 ? "F8FBFA" : "FFFFFF";
+  page.background = { color: bg };
+  const rectShape = pptx.ShapeType?.rect || window.pptxgen?.ShapeType?.rect || window.PptxGenJS?.ShapeType?.rect || "rect";
+  page.addShape(rectShape, { x: 0, y: 0, w: 13.333, h: 0.28, fill: { color: "83CBB7" }, line: { color: "83CBB7" } });
+  page.addText(String(index + 1).padStart(2, "0"), {
+    x: 0.52,
+    y: 0.48,
+    w: 1.2,
+    h: 0.34,
+    fontFace: "Microsoft YaHei",
+    fontSize: 13,
+    bold: true,
+    color: "B88B26",
+    margin: 0,
+  });
+  page.addText(slide.chapter || "方案", {
+    x: 1.15,
+    y: 0.49,
+    w: 1.5,
+    h: 0.3,
+    fontFace: "Microsoft YaHei",
+    fontSize: 10,
+    bold: true,
+    color: "27745F",
+    margin: 0,
+  });
+  page.addText(slide.title, {
+    x: 0.72,
+    y: 1.02,
+    w: 11.8,
+    h: 0.62,
+    fontFace: "Microsoft YaHei",
+    fontSize: 24,
+    bold: true,
+    color: "17201F",
+    margin: 0,
+    breakLine: false,
+  });
+
+  const bodyItems = slide.type === "paragraph" ? slide.content : splitTextForPpt(slide.content, 7);
+  if (slide.type === "paragraph") {
+    page.addText(bodyItems.join("\n\n"), {
+      x: 0.86,
+      y: 2,
+      w: 11.4,
+      h: 3.4,
+      fontFace: "Microsoft YaHei",
+      fontSize: 15,
+      color: "31423D",
+      breakLine: false,
+      fit: "shrink",
+      valign: "top",
+      margin: 0.04,
+    });
+  } else {
+    page.addText(
+      bodyItems.map((item) => ({ text: item, options: { bullet: { type: "bullet" }, breakLine: true } })),
+      {
+        x: 0.9,
+        y: 1.9,
+        w: 11.2,
+        h: 3.72,
+        fontFace: "Microsoft YaHei",
+        fontSize: 14,
+        color: "31423D",
+        breakLine: false,
+        fit: "shrink",
+        paraSpaceAfterPt: 8,
+        margin: 0.06,
+      },
+    );
+  }
+
+  page.addText(`写作思路：${slide.rationale || "围绕客户材料、诊断结论和参考案例展开。"}`, {
+    x: 0.72,
+    y: 6.25,
+    w: 11.9,
+    h: 0.42,
+    fontFace: "Microsoft YaHei",
+    fontSize: 8.5,
+    color: "68706D",
+    fit: "shrink",
+    margin: 0,
+  });
+  page.addText(`${index + 1} / ${total}`, {
+    x: 11.75,
+    y: 6.92,
+    w: 0.9,
+    h: 0.18,
+    fontFace: "Arial",
+    fontSize: 8,
+    color: "68706D",
+    align: "right",
+    margin: 0,
+  });
+}
+
+async function generatePptInBrowser() {
+  const PptxGen = window.pptxgen || window.PptxGenJS || window.pptxgenjs;
+  if (!PptxGen) {
+    return generatePptWithBuiltInTool();
+  }
+
+  const pptx = new PptxGen();
+  pptx.layout = "LAYOUT_WIDE";
+  pptx.author = "CUSOLUTION";
+  pptx.company = "TOB Solution Center";
+  pptx.subject = "客户诊断与解决方案";
+  pptx.title = `${dom.customerName.value || "客户"}解决方案`;
+  pptx.lang = "zh-CN";
+  pptx.theme = {
+    headFontFace: "Microsoft YaHei",
+    bodyFontFace: "Microsoft YaHei",
+    lang: "zh-CN",
+  };
+
+  state.proposal.slides.forEach((slide, index) => addPptSlide(pptx, slide, index, state.proposal.slides.length));
+  const fileName = `${safeFileName(dom.customerName.value)}_解决方案_${new Date().toISOString().slice(0, 10)}.pptx`;
+  await pptx.writeFile({ fileName });
+  return { fileName, mode: "browser" };
+}
+
+function downloadBlob(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 800);
+}
+
+function base64ToBlob(base64, mimeType) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new Blob([bytes], { type: mimeType });
+}
+
+async function generatePptByService(settings) {
+  if (!settings.pptToolUrl) {
+    throw new Error("已选择后端 PPT 生成服务，但尚未配置 PPT 生成工具接口。");
+  }
+
+  const response = await fetch(settings.pptToolUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(settings.pptToolApiKey ? { Authorization: `Bearer ${settings.pptToolApiKey}` } : {}),
+    },
+    body: JSON.stringify({
+      template: settings.pptToolTemplate,
+      customer: collectInput(),
+      diagnosis: state.diagnosis,
+      materialAnalysis: state.materialAnalysis,
+      proposal: state.proposal,
+      references: getSelectedKnowhowRefs(),
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    throw new Error(`PPT 生成工具 HTTP ${response.status}${errorText ? `：${errorText.slice(0, 120)}` : ""}`);
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  const fileName = `${safeFileName(dom.customerName.value)}_解决方案_${new Date().toISOString().slice(0, 10)}.pptx`;
+  if (contentType.includes("presentation") || contentType.includes("application/octet-stream")) {
+    downloadBlob(await response.blob(), fileName);
+    return { fileName, mode: "service" };
+  }
+
+  const data = await response.json();
+  const downloadUrl = data.download_url || data.downloadUrl || data.file_url || data.fileUrl || data.url;
+  if (downloadUrl) {
+    window.open(downloadUrl, "_blank", "noopener,noreferrer");
+    return { fileName: data.file_name || fileName, mode: "service-url" };
+  }
+
+  const base64 = data.base64 || data.file_base64 || data.pptx_base64;
+  if (base64) {
+    downloadBlob(base64ToBlob(base64, "application/vnd.openxmlformats-officedocument.presentationml.presentation"), data.file_name || fileName);
+    return { fileName: data.file_name || fileName, mode: "service-base64" };
+  }
+
+  throw new Error("PPT 生成工具已返回，但未包含文件、download_url 或 base64。");
+}
+
+async function generatePptFile() {
+  if (!state.proposal) {
+    showToast("请先生成方案框架。");
+    return;
+  }
+
+  state.settings = getConfiguredSettings();
+  localStorage.setItem("agentSettings", JSON.stringify(state.settings));
+  const settings = state.settings;
+
+  try {
+    setPptStatus("正在调用 PPT 生成工具，请稍候...", "working");
+    dom.generatePptBtn.disabled = true;
+    const result = settings.pptToolMode === "service" ? await generatePptByService(settings) : await generatePptInBrowser();
+    setPptStatus(`PPT 已生成：${result.fileName}`, "success");
+    setStatus("PPT 已生成");
+    showToast("正式 PPT 文件已生成。");
+  } catch (error) {
+    setPptStatus(`PPT 生成失败：${error.message}`, "error");
+    showToast(`PPT 生成失败：${error.message}`);
+  } finally {
+    dom.generatePptBtn.disabled = false;
+  }
+}
+
 function getConfiguredSettings() {
   return {
     knowhowUrl: dom.knowhowUrl.value.trim() || state.settings.knowhowUrl,
@@ -821,6 +1431,13 @@ function getConfiguredSettings() {
     scenarioField: dom.scenarioField.value.trim() || state.settings.scenarioField,
     qualityFilter: dom.qualityFilter.value.trim(),
     nodePathFilter: dom.nodePathFilter.value.trim(),
+    materialAgentUrl: dom.materialAgentUrl.value.trim(),
+    materialAgentApiKey: dom.materialAgentApiKey.value.trim() || state.settings.materialAgentApiKey || "",
+    materialAgentPrompt: dom.materialAgentPrompt.value.trim() || state.settings.materialAgentPrompt,
+    pptToolMode: dom.pptToolMode.value || state.settings.pptToolMode || "browser",
+    pptToolUrl: dom.pptToolUrl.value.trim(),
+    pptToolApiKey: dom.pptToolApiKey.value.trim() || state.settings.pptToolApiKey || "",
+    pptToolTemplate: dom.pptToolTemplate.value.trim(),
     knowhowRule: dom.knowhowRule.value.trim() || state.settings.knowhowRule,
   };
 }
@@ -1087,7 +1704,7 @@ function normalizeKnowhowResults(payload, input) {
         "document.content",
         "doc.summary",
         "metadata.summary",
-      ]) || "已从 Knowhow 平台召回，可作为方案结构、案例表达或 PPT 内容参考。";
+      ]) || "已从 Knowhow 平台召回，可作为方案结构、案例表达或材料内容参考。";
 
     return {
       id: `api-${index}-${title}-${customer}`,
@@ -1134,7 +1751,7 @@ function buildMockKnowhowRefs(input, diagnosis) {
       summary:
         index < 3
           ? "可作为主方案框架参考，重点借鉴项目背景、场景价值、业务指标和阶段计划。"
-          : "可补充行业案例、业务场景表达、PPT 章节素材和客户价值表述。",
+          : "可补充行业案例、业务场景表达、方案章节素材和客户价值表述。",
     };
   });
 }
@@ -1147,7 +1764,7 @@ function renderKnowhowRefs() {
 
   dom.knowhowStatus.textContent =
     state.knowhowMode === "api"
-      ? `已从 Knowhow API 召回 TOP ${refs.length} 推荐，请勾选可参考的客户方案。`
+      ? `已从 Knowhow API 召回 TOP ${refs.length} 推荐，请勾选可参考的客户材料。`
       : state.settings.knowhowApiKey
         ? `Knowhow API 尚未打通，当前显示 TOP ${refs.length} 模拟推荐。请到平台配置查看连接诊断。`
         : `未配置 API Key，当前显示 TOP ${refs.length} 模拟推荐。`;
@@ -1166,7 +1783,7 @@ function renderKnowhowRefs() {
             </div>
             <span>${escapeHtml(ref.businessScenario)} · ${escapeHtml(ref.pptTitle)}</span>
             <p>${escapeHtml(ref.summary || "")}</p>
-            <button class="preview-link" type="button" data-preview-id="${escapeHtml(ref.id)}">在线预览 PPT</button>
+            <button class="preview-link" type="button" data-preview-id="${escapeHtml(ref.id)}">在线预览材料</button>
           </div>
         </label>
       `,
@@ -1230,7 +1847,7 @@ function buildMockPreview(ref) {
         <p class="slide-index">03</p>
         <h4>可借鉴内容</h4>
         <ul>
-          <li>PPT 方案：${escapeHtml(ref.pptTitle)}</li>
+          <li>参考材料：${escapeHtml(ref.pptTitle)}</li>
           <li>匹配度：${escapeHtml(ref.matchScore)}%</li>
           <li>${escapeHtml(ref.summary)}</li>
         </ul>
@@ -1395,11 +2012,13 @@ async function runDiagnosis() {
   dom.diagnosisResult.classList.add("hidden");
 
   try {
-    setProgress(8, "读取客户材料", "read");
+    setProgress(8, "整理客户材料", "read");
     await sleep(260);
 
-    setProgress(28, "解析上传文件内容", "parse");
-    await parseMaterials(input.materials);
+    setProgress(28, "调用大模型分析上传材料", "parse");
+    state.settings = getConfiguredSettings();
+    localStorage.setItem("agentSettings", JSON.stringify(state.settings));
+    state.materialAnalysis = await analyzeMaterialsWithLLM(input);
     refreshCustomerTags();
     await sleep(320);
 
@@ -1424,6 +2043,10 @@ async function runDiagnosis() {
       addVersion("初版生成");
       renderProposal();
     }
+  } catch (error) {
+    setStatus("诊断失败");
+    showToast(`客户诊断失败：${error.message}`);
+    setProgress(28, `材料分析失败：${error.message}`, "parse");
   } finally {
     dom.runDiagnosisBtn.disabled = false;
   }
@@ -1533,6 +2156,13 @@ function renderSettings() {
   dom.scenarioField.value = state.settings.scenarioField;
   dom.qualityFilter.value = state.settings.qualityFilter || "";
   dom.nodePathFilter.value = state.settings.nodePathFilter || "";
+  dom.materialAgentUrl.value = state.settings.materialAgentUrl || "";
+  dom.materialAgentApiKey.value = state.settings.materialAgentApiKey || "";
+  dom.materialAgentPrompt.value = state.settings.materialAgentPrompt || defaultSettings.materialAgentPrompt;
+  dom.pptToolMode.value = state.settings.pptToolMode || "browser";
+  dom.pptToolUrl.value = state.settings.pptToolUrl || "";
+  dom.pptToolApiKey.value = state.settings.pptToolApiKey || "";
+  dom.pptToolTemplate.value = state.settings.pptToolTemplate || "";
   dom.knowhowRule.value = state.settings.knowhowRule;
 }
 
@@ -1589,8 +2219,10 @@ function bindEvents() {
       return;
     }
     setStatus("方案已确认");
-    showToast("方案已确认，可进入后续导出 PPT 或推送 CRM 流程。");
+    showToast("方案已确认，正在调用 PPT 生成工具。");
+    generatePptFile();
   });
+  dom.generatePptBtn.addEventListener("click", generatePptFile);
 
   dom.slideTabs.addEventListener("click", (event) => {
     const button = event.target.closest("button");

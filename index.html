@@ -119,7 +119,7 @@
                 />
                 <div>
                   <strong>拖拽或选择 Word / PPT / PDF / Excel 材料</strong>
-                  <p>每份材料必须补充描述，Agent 会结合文件名、类型、描述和整体信息进行诊断。</p>
+                  <p>每份材料必须补充描述，运行诊断时会提交给大模型材料分析 Agent 进行内容理解。</p>
                 </div>
               </div>
 
@@ -148,8 +148,8 @@
                   <div class="progress-fill" id="progressFill"></div>
                 </div>
                 <ol class="progress-steps" id="progressSteps">
-                  <li data-step="read">读取客户材料</li>
-                  <li data-step="parse">解析文件内容</li>
+                  <li data-step="read">整理客户材料</li>
+                  <li data-step="parse">调用大模型分析材料</li>
                   <li data-step="extract">抽取关键词与需求场景</li>
                   <li data-step="reason">综合售前判断生成诊断</li>
                 </ol>
@@ -251,7 +251,9 @@
               </label>
               <div class="action-row">
                 <button class="primary-btn" id="refineDeckBtn" type="button">执行 AGENT 完善 PPT</button>
+                <button class="secondary-btn" id="generatePptBtn" type="button">调用 PPT 生成工具</button>
               </div>
+              <div class="tool-status" id="pptGenerationStatus">方案确认后，可调用 PPT 生成工具输出正式 .pptx 文件。</div>
             </section>
 
             <aside class="insight-panel">
@@ -267,7 +269,7 @@
                   <h4>TOP 10 场景匹配参考</h4>
                   <button class="mini-btn" id="refreshKnowhowBtn" type="button">刷新</button>
                 </div>
-                <p class="reference-status" id="knowhowStatus">诊断完成后，自动推荐最匹配的客户案例、业务场景和 PPT 方案。</p>
+                <p class="reference-status" id="knowhowStatus">诊断完成后，自动推荐最匹配的客户案例、业务场景和参考材料。</p>
                 <div id="knowhowRefs"></div>
               </div>
 
@@ -388,6 +390,55 @@
               <p class="panel-title">连接诊断</p>
               <div id="configDiagnosticText">尚未测试 Knowhow 连接。</div>
             </div>
+
+            <div class="integration-divider"></div>
+
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Agent Services</p>
+                <h3>大模型与 PPT 工具配置</h3>
+              </div>
+            </div>
+
+            <div class="form-grid">
+              <label class="field">
+                <span>材料分析大模型 Agent 接口</span>
+                <input id="materialAgentUrl" type="url" placeholder="例如：https://your-domain.com/api/material/analyze" />
+              </label>
+              <label class="field">
+                <span>材料分析 Agent API Key</span>
+                <input id="materialAgentApiKey" type="password" placeholder="可选，仅保存在当前浏览器" />
+              </label>
+              <label class="field">
+                <span>PPT 生成方式</span>
+                <select id="pptToolMode">
+                  <option value="browser">浏览器端 PPTX 工具</option>
+                  <option value="service">后端 PPT 生成服务</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>PPT 生成工具接口</span>
+                <input id="pptToolUrl" type="url" placeholder="例如：https://your-domain.com/api/ppt/generate" />
+              </label>
+              <label class="field">
+                <span>PPT 工具 API Key</span>
+                <input id="pptToolApiKey" type="password" placeholder="可选，仅保存在当前浏览器" />
+              </label>
+              <label class="field">
+                <span>PPT 模板名称</span>
+                <input id="pptToolTemplate" type="text" placeholder="例如：售前解决方案标准模板" />
+              </label>
+            </div>
+
+            <label class="field textarea-field">
+              <span>材料分析输出要求</span>
+              <textarea id="materialAgentPrompt" rows="5">请充分阅读上传材料，输出客户项目建设背景、重点诉求、痛点目标、需求场景、风险挑战、关键词、逐份材料摘要和可引用证据。请返回 JSON，字段可包含 summary、keywords、scenarios、pains、risks、evidence、materials。</textarea>
+            </label>
+
+            <div class="config-diagnostics">
+              <p class="panel-title">服务说明</p>
+              <p>材料分析 Agent 建议接收 multipart/form-data：payload 为客户信息 JSON，files 为上传文件。PPT 生成服务建议接收诊断结果、方案框架、选中 Knowhow 参考材料，并返回 pptx 文件、download_url 或 base64。</p>
+            </div>
           </section>
         </section>
       </main>
@@ -399,8 +450,8 @@
       <div class="preview-dialog">
         <div class="preview-header">
           <div>
-            <p class="eyebrow">PPT Preview</p>
-            <h3 id="previewTitle">方案预览</h3>
+            <p class="eyebrow">Material Preview</p>
+            <h3 id="previewTitle">材料预览</h3>
           </div>
           <button class="icon-btn" id="closePreviewBtn" type="button" aria-label="关闭预览">×</button>
         </div>
@@ -408,6 +459,7 @@
       </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>
