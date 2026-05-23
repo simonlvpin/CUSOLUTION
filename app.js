@@ -12,6 +12,10 @@ const defaultSettings = {
   scenarioField: "tags",
   qualityFilter: "",
   nodePathFilter: "",
+  customerTagAgentUrl: "",
+  customerTagAgentApiKey: "",
+  customerTagAgentPrompt:
+    "请根据客户名称和已输入上下文识别企业标签，输出 JSON：industry、region、ownership、market、scale、aliases、confidence、reason。标签需覆盖行业、地区、央国企/地方国企/民企、上市公司状态、集团型客户等。",
   materialAgentUrl: "",
   materialAgentApiKey: "",
   materialAgentPrompt:
@@ -35,6 +39,7 @@ const state = {
   knowhowMode: "mock",
   selectedKnowhowIds: new Set(),
   customerTags: [],
+  customerTagMode: "local",
   materialAnalysis: null,
   settings: { ...defaultSettings, ...savedSettings },
 };
@@ -144,6 +149,9 @@ const dom = {
   scenarioField: document.querySelector("#scenarioField"),
   qualityFilter: document.querySelector("#qualityFilter"),
   nodePathFilter: document.querySelector("#nodePathFilter"),
+  customerTagAgentUrl: document.querySelector("#customerTagAgentUrl"),
+  customerTagAgentApiKey: document.querySelector("#customerTagAgentApiKey"),
+  customerTagAgentPrompt: document.querySelector("#customerTagAgentPrompt"),
   materialAgentUrl: document.querySelector("#materialAgentUrl"),
   materialAgentApiKey: document.querySelector("#materialAgentApiKey"),
   materialAgentPrompt: document.querySelector("#materialAgentPrompt"),
@@ -204,24 +212,24 @@ function inferCustomerTags(customerName = "", extraText = "") {
 
   customerTagRules.forEach((rule) => {
     if (keywordHit(text, rule.words) && !seen.has(`${rule.category}:${rule.label}`)) {
-      tags.push({ category: rule.category, label: rule.label, source: "AI 识别" });
+      tags.push({ category: rule.category, label: rule.label, source: "本地规则兜底" });
       seen.add(`${rule.category}:${rule.label}`);
     }
   });
 
   if (!tags.some((tag) => tag.category === "industry")) {
-    tags.push({ category: "industry", label: "行业待确认", source: "AI 待确认" });
+    tags.push({ category: "industry", label: "行业待确认", source: "未配置标签识别 Agent" });
   }
 
   if (!tags.some((tag) => tag.category === "market")) {
-    tags.push({ category: "market", label: "上市状态待核验", source: "AI 待确认" });
+    tags.push({ category: "market", label: "上市状态待核验", source: "未配置标签识别 Agent" });
   }
 
   if (customerName.includes("上海地产集团")) {
     const tags = [
       { category: "industry", label: "房地产与城投", source: "客户名称" },
       { category: "region", label: "上海", source: "客户名称" },
-      { category: "ownership", label: "地方国企", source: "集团属性推断" },
+      { category: "ownership", label: "地方国企", source: "本地规则兜底" },
       { category: "market", label: "上市状态待核验", source: "需外部核验" },
       { category: "scale", label: "集团型客户", source: "客户名称" },
     ];
@@ -251,7 +259,7 @@ function getTagsByCategory(category, tags = state.customerTags) {
 
 function renderCustomerTags() {
   if (!state.customerTags.length) {
-    dom.customerTagPanel.innerHTML = '<div class="tag-placeholder">输入客户名称后自动识别行业、地区、企业属性等标签</div>';
+    dom.customerTagPanel.innerHTML = '<div class="tag-placeholder">输入客户名称后自动调用大模型识别行业、地区、企业属性等标签</div>';
     return;
   }
 
@@ -263,10 +271,170 @@ function renderCustomerTags() {
     .join("");
 }
 
-function refreshCustomerTags() {
+function renderCustomerTagLoading(text = "正在调用大模型识别企业标签...") {
+  dom.customerTagPanel.innerHTML = `<div class="tag-placeholder">${escapeHtml(text)}</div>`;
+}
+
+function getCustomerTagContext() {
+  return `${dom.overallNotes.value} ${state.materials.map((item) => `${item.name} ${item.description}`).join(" ")}`.trim();
+}
+
+function getLocalCustomerTags() {
   const extraText = `${dom.overallNotes.value} ${state.materials.map((item) => item.description).join(" ")}`;
-  state.customerTags = inferCustomerTags(dom.customerName.value.trim(), extraText);
+  return inferCustomerTags(dom.customerName.value.trim(), extraText);
+}
+
+function normalizeCustomerTagAgentResult(payload = {}) {
+  const data = payload.data || payload.result || payload.output || payload;
+  if (typeof data === "string") {
+    try {
+      return JSON.parse(data);
+    } catch (error) {
+      return { summary: data };
+    }
+  }
+  return data && typeof data === "object" ? data : {};
+}
+
+function pushTag(tags, seen, category, value, source) {
+  if (!value) return;
+  const values = Array.isArray(value) ? value : String(value).split(/[，,、;；/]/);
+  values
+    .map((item) => String(item).trim())
+    .filter(Boolean)
+    .forEach((label) => {
+      const key = `${category}:${label}`;
+      if (seen.has(key)) return;
+      tags.push({ category, label, source });
+      seen.add(key);
+    });
+}
+
+function normalizeCustomerTagsFromAgent(result, customerName) {
+  const tags = [];
+  const seen = new Set();
+  const source = result.reason ? `大模型识别：${result.reason}` : "大模型识别";
+  const flatTags = result.tags || result.labels || result.customerTags;
+
+  if (Array.isArray(flatTags)) {
+    flatTags.forEach((item) => {
+      if (typeof item === "string") {
+        pushTag(tags, seen, "tag", item, source);
+      } else if (item && typeof item === "object") {
+        pushTag(tags, seen, item.category || item.type || "tag", item.label || item.name || item.value, item.source || source);
+      }
+    });
+  }
+
+  pushTag(tags, seen, "industry", result.industry || result.industryTag, source);
+  pushTag(tags, seen, "region", result.region || result.location || result.area, source);
+  pushTag(tags, seen, "ownership", result.ownership || result.ownershipTag || result.enterpriseProperty, source);
+  pushTag(tags, seen, "market", result.market || result.marketTag || result.listedStatus || result.isListed, source);
+  pushTag(tags, seen, "scale", result.scale || result.scaleTag, source);
+  pushTag(tags, seen, "alias", result.aliases || result.alias, source);
+
+  if (!tags.length) return inferCustomerTags(customerName, getCustomerTagContext());
+  if (!tags.some((tag) => tag.category === "industry")) {
+    pushTag(tags, seen, "industry", "行业待确认", "大模型未返回行业");
+  }
+  if (!tags.some((tag) => tag.category === "market")) {
+    pushTag(tags, seen, "market", "上市状态待核验", "大模型未返回上市状态");
+  }
+  return tags.slice(0, 12);
+}
+
+async function callCustomerTagAgent(customerName) {
+  const settings = state.settings;
+  const endpoint = settings.customerTagAgentUrl?.trim();
+  if (!endpoint) return { tags: getLocalCustomerTags(), mode: "local" };
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(settings.customerTagAgentApiKey ? { Authorization: `Bearer ${settings.customerTagAgentApiKey}` } : {}),
+    },
+    body: JSON.stringify({
+      customerName,
+      context: getCustomerTagContext(),
+      prompt: settings.customerTagAgentPrompt,
+      expected_schema: {
+        industry: "行业标签",
+        region: "地区",
+        ownership: "央国企/地方国企/民企等企业属性",
+        market: "上市公司/非上市/待核验",
+        scale: "集团型客户等规模标签",
+        aliases: ["企业别名"],
+        confidence: 0.8,
+        reason: "识别依据",
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    throw new Error(`客户标签 Agent HTTP ${response.status}${errorText ? `：${errorText.slice(0, 120)}` : ""}`);
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  const raw = contentType.includes("application/json") ? await response.json() : await response.text();
+  const result = normalizeCustomerTagAgentResult(raw);
+  return { tags: normalizeCustomerTagsFromAgent(result, customerName), mode: "agent" };
+}
+
+function refreshCustomerTags() {
+  state.customerTagMode = "local";
+  state.customerTags = getLocalCustomerTags();
   renderCustomerTags();
+}
+
+function refreshCustomerTagsWithAgent(options = {}) {
+  const customerName = dom.customerName.value.trim();
+  window.clearTimeout(refreshCustomerTagsWithAgent.timer);
+  if (!customerName) {
+    state.customerTags = [];
+    state.customerTagMode = "empty";
+    renderCustomerTags();
+    return Promise.resolve();
+  }
+
+  state.settings = getConfiguredSettings();
+  localStorage.setItem("agentSettings", JSON.stringify(state.settings));
+
+  const run = async () => {
+    const requestName = dom.customerName.value.trim();
+    if (!requestName) return;
+    const requestId = uid();
+    refreshCustomerTagsWithAgent.latestRequestId = requestId;
+
+    if (state.settings.customerTagAgentUrl) {
+      renderCustomerTagLoading();
+    }
+
+    try {
+      const result = await callCustomerTagAgent(requestName);
+      if (refreshCustomerTagsWithAgent.latestRequestId !== requestId || dom.customerName.value.trim() !== requestName) return;
+      state.customerTagMode = result.mode;
+      state.customerTags = result.tags;
+      renderCustomerTags();
+      if (result.mode === "local" && options.notify !== false) {
+        showToast("未配置客户标签识别 Agent，已使用本地规则兜底。");
+      }
+    } catch (error) {
+      if (refreshCustomerTagsWithAgent.latestRequestId !== requestId) return;
+      state.customerTagMode = "fallback";
+      state.customerTags = getLocalCustomerTags();
+      renderCustomerTags();
+      showToast(`客户标签 Agent 调用失败，已使用本地规则兜底：${error.message}`);
+    }
+  };
+
+  const delay = options.immediate ? 0 : 650;
+  return new Promise((resolve) => {
+    refreshCustomerTagsWithAgent.timer = window.setTimeout(() => {
+      run().finally(resolve);
+    }, delay);
+  });
 }
 
 function addMaterial(file) {
@@ -316,7 +484,7 @@ function renderMaterials() {
 
     card.querySelector("textarea").addEventListener("input", (event) => {
       material.description = event.target.value;
-      refreshCustomerTags();
+      refreshCustomerTagsWithAgent({ notify: false });
     });
 
     card.querySelector("button").addEventListener("click", () => {
@@ -330,6 +498,7 @@ function renderMaterials() {
 
 function collectInput() {
   if (!state.customerTags.length && dom.customerName.value.trim()) {
+    state.customerTagMode = "local";
     refreshCustomerTags();
   }
   const industry = getPrimaryIndustry();
@@ -1431,6 +1600,9 @@ function getConfiguredSettings() {
     scenarioField: dom.scenarioField.value.trim() || state.settings.scenarioField,
     qualityFilter: dom.qualityFilter.value.trim(),
     nodePathFilter: dom.nodePathFilter.value.trim(),
+    customerTagAgentUrl: dom.customerTagAgentUrl.value.trim(),
+    customerTagAgentApiKey: dom.customerTagAgentApiKey.value.trim() || state.settings.customerTagAgentApiKey || "",
+    customerTagAgentPrompt: dom.customerTagAgentPrompt.value.trim() || state.settings.customerTagAgentPrompt,
     materialAgentUrl: dom.materialAgentUrl.value.trim(),
     materialAgentApiKey: dom.materialAgentApiKey.value.trim() || state.settings.materialAgentApiKey || "",
     materialAgentPrompt: dom.materialAgentPrompt.value.trim() || state.settings.materialAgentPrompt,
@@ -1999,6 +2171,7 @@ function renderVersions() {
 }
 
 async function runDiagnosis() {
+  await refreshCustomerTagsWithAgent({ immediate: true, notify: false });
   const input = collectInput();
   const error = validateDiagnosisInput(input);
   if (error) {
@@ -2019,7 +2192,7 @@ async function runDiagnosis() {
     state.settings = getConfiguredSettings();
     localStorage.setItem("agentSettings", JSON.stringify(state.settings));
     state.materialAnalysis = await analyzeMaterialsWithLLM(input);
-    refreshCustomerTags();
+    await refreshCustomerTagsWithAgent({ immediate: true, notify: false });
     await sleep(320);
 
     setProgress(56, "抽取关键词与需求场景", "extract");
@@ -2119,7 +2292,7 @@ function loadSample() {
         "内部获取的报表样例，包含销售回款、租赁收入、项目投资、工程进度等指标，但口径说明不完整。",
     },
   ];
-  refreshCustomerTags();
+  refreshCustomerTagsWithAgent({ immediate: true, notify: false });
   renderMaterials();
   showToast("示例信息已填入。");
 }
@@ -2156,6 +2329,9 @@ function renderSettings() {
   dom.scenarioField.value = state.settings.scenarioField;
   dom.qualityFilter.value = state.settings.qualityFilter || "";
   dom.nodePathFilter.value = state.settings.nodePathFilter || "";
+  dom.customerTagAgentUrl.value = state.settings.customerTagAgentUrl || "";
+  dom.customerTagAgentApiKey.value = state.settings.customerTagAgentApiKey || "";
+  dom.customerTagAgentPrompt.value = state.settings.customerTagAgentPrompt || defaultSettings.customerTagAgentPrompt;
   dom.materialAgentUrl.value = state.settings.materialAgentUrl || "";
   dom.materialAgentApiKey.value = state.settings.materialAgentApiKey || "";
   dom.materialAgentPrompt.value = state.settings.materialAgentPrompt || defaultSettings.materialAgentPrompt;
@@ -2199,8 +2375,8 @@ function bindEvents() {
   });
 
   dom.addMaterialBtn.addEventListener("click", () => addMaterial());
-  dom.customerName.addEventListener("input", refreshCustomerTags);
-  dom.overallNotes.addEventListener("input", refreshCustomerTags);
+  dom.customerName.addEventListener("input", () => refreshCustomerTagsWithAgent());
+  dom.overallNotes.addEventListener("input", () => refreshCustomerTagsWithAgent({ notify: false }));
   dom.runDiagnosisBtn.addEventListener("click", runDiagnosis);
   dom.loadSampleBtn.addEventListener("click", loadSample);
   dom.goProposalBtn.addEventListener("click", () => {
@@ -2269,4 +2445,4 @@ function bindEvents() {
 renderSettings();
 bindEvents();
 renderVersions();
-refreshCustomerTags();
+refreshCustomerTagsWithAgent({ immediate: true, notify: false });

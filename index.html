@@ -73,9 +73,9 @@
                 </label>
 
                 <div class="field tag-field">
-                  <span>AI 识别客户标签</span>
+                  <span>大模型识别客户标签</span>
                   <div class="ai-tag-panel" id="customerTagPanel">
-                    <div class="tag-placeholder">输入客户名称后自动识别行业、地区、企业属性等标签</div>
+                    <div class="tag-placeholder">输入客户名称后自动调用大模型识别行业、地区、企业属性等标签</div>
                   </div>
                 </div>
 
@@ -402,6 +402,14 @@
 
             <div class="form-grid">
               <label class="field">
+                <span>客户标签识别大模型 Agent 接口</span>
+                <input id="customerTagAgentUrl" type="url" placeholder="例如：https://your-domain.com/api/customer/tags" />
+              </label>
+              <label class="field">
+                <span>客户标签 Agent API Key</span>
+                <input id="customerTagAgentApiKey" type="password" placeholder="可选，仅保存在当前浏览器" />
+              </label>
+              <label class="field">
                 <span>材料分析大模型 Agent 接口</span>
                 <input id="materialAgentUrl" type="url" placeholder="例如：https://your-domain.com/api/material/analyze" />
               </label>
@@ -431,13 +439,18 @@
             </div>
 
             <label class="field textarea-field">
+              <span>客户标签识别要求</span>
+              <textarea id="customerTagAgentPrompt" rows="4">请根据客户名称和已输入上下文识别企业标签，输出 JSON：industry、region、ownership、market、scale、aliases、confidence、reason。标签需覆盖行业、地区、央国企/地方国企/民企、上市公司状态、集团型客户等。</textarea>
+            </label>
+
+            <label class="field textarea-field">
               <span>材料分析输出要求</span>
               <textarea id="materialAgentPrompt" rows="5">请充分阅读上传材料，输出客户项目建设背景、重点诉求、痛点目标、需求场景、风险挑战、关键词、逐份材料摘要和可引用证据。请返回 JSON，字段可包含 summary、keywords、scenarios、pains、risks、evidence、materials。</textarea>
             </label>
 
             <div class="config-diagnostics">
               <p class="panel-title">服务说明</p>
-              <p>材料分析 Agent 建议接收 multipart/form-data：payload 为客户信息 JSON，files 为上传文件。PPT 生成服务建议接收诊断结果、方案框架、选中 Knowhow 参考材料，并返回 pptx 文件、download_url 或 base64。</p>
+              <p>客户标签 Agent 建议接收 JSON：customerName、context、prompt，并返回企业画像标签。材料分析 Agent 建议接收 multipart/form-data：payload 为客户信息 JSON，files 为上传文件。PPT 生成服务建议接收诊断结果、方案框架、选中 Knowhow 参考材料，并返回 pptx 文件、download_url 或 base64。</p>
             </div>
           </section>
         </section>
