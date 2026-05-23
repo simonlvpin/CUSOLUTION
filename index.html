@@ -315,6 +315,17 @@
                 </select>
               </label>
               <label class="field">
+                <span>请求模式</span>
+                <select id="knowhowRequestMode">
+                  <option value="direct">浏览器直连 Knowhow API</option>
+                  <option value="proxy">后端代理转发</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>代理接口地址</span>
+                <input id="knowhowProxyUrl" type="url" placeholder="例如：https://your-domain.com/api/knowhow/retrieve" />
+              </label>
+              <label class="field">
                 <span>API Key</span>
                 <input id="knowhowApiKey" type="password" placeholder="Bearer Token，仅保存在当前浏览器" />
               </label>

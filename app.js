@@ -10,6 +10,8 @@ const state = {
   settings: JSON.parse(localStorage.getItem("agentSettings") || "null") || {
     knowhowUrl: "https://digitchat.fanruan.com/dataset/",
     knowhowAuth: "API Token",
+    knowhowRequestMode: "direct",
+    knowhowProxyUrl: "",
     knowhowApiKey: "",
     businessDomain: "project",
     datasets: "both",
@@ -115,6 +117,8 @@ const dom = {
   versionList: document.querySelector("#versionList"),
   knowhowUrl: document.querySelector("#knowhowUrl"),
   knowhowAuth: document.querySelector("#knowhowAuth"),
+  knowhowRequestMode: document.querySelector("#knowhowRequestMode"),
+  knowhowProxyUrl: document.querySelector("#knowhowProxyUrl"),
   knowhowApiKey: document.querySelector("#knowhowApiKey"),
   businessDomain: document.querySelector("#businessDomain"),
   datasets: document.querySelector("#datasets"),
@@ -804,6 +808,8 @@ function getConfiguredSettings() {
   return {
     knowhowUrl: dom.knowhowUrl.value.trim() || state.settings.knowhowUrl,
     knowhowAuth: dom.knowhowAuth.value || state.settings.knowhowAuth,
+    knowhowRequestMode: dom.knowhowRequestMode.value || state.settings.knowhowRequestMode || "direct",
+    knowhowProxyUrl: dom.knowhowProxyUrl.value.trim(),
     knowhowApiKey: dom.knowhowApiKey.value.trim() || state.settings.knowhowApiKey,
     businessDomain: dom.businessDomain.value || state.settings.businessDomain,
     datasets: dom.datasets.value || state.settings.datasets,
@@ -819,6 +825,13 @@ function getConfiguredSettings() {
 function makeKnowhowEndpoint(baseUrl) {
   const normalized = (baseUrl || "").trim().replace(/\/+$/, "");
   return `${normalized}/api/v1/retrieve`;
+}
+
+function getKnowhowRequestUrl(settings) {
+  if (settings.knowhowRequestMode === "proxy") {
+    return settings.knowhowProxyUrl;
+  }
+  return makeKnowhowEndpoint(settings.knowhowUrl);
 }
 
 function setConfigDiagnostic(type, lines) {
@@ -1135,7 +1148,7 @@ async function refreshKnowhowRefs(options = {}) {
     if (options.diagnostic) {
       setConfigDiagnostic("warn", [
         "未填写 API Key，所以只能显示模拟推荐。",
-        `当前请求地址：${makeKnowhowEndpoint(settings.knowhowUrl)}`,
+        `当前请求地址：${getKnowhowRequestUrl(settings) || "未配置"}`,
         "解决方式：在平台配置页填写 Knowhow API Key，保存后再测试推荐。",
       ]);
     }
@@ -1143,15 +1156,32 @@ async function refreshKnowhowRefs(options = {}) {
     return;
   }
 
+  if (settings.knowhowRequestMode === "proxy" && !settings.knowhowProxyUrl) {
+    state.knowhowRefs = buildMockKnowhowRefs(input, diagnosis);
+    state.knowhowMode = "mock";
+    state.selectedKnowhowIds = new Set();
+    renderKnowhowRefs();
+    if (options.diagnostic) {
+      setConfigDiagnostic("warn", [
+        "已选择后端代理模式，但未填写代理接口地址。",
+        "解决方式：填写一个由后端转发到 Knowhow 的接口，例如 /api/knowhow/retrieve。",
+        "代理接口需要在服务端携带 Authorization 或接收前端传入的 API Key。",
+      ]);
+    }
+    return;
+  }
+
   dom.knowhowStatus.textContent = "正在调用 Knowhow API 检索...";
   const payload = buildKnowhowPayload(input, diagnosis, settings);
+  const requestUrl = getKnowhowRequestUrl(settings);
 
   try {
-    const response = await fetch(makeKnowhowEndpoint(settings.knowhowUrl), {
+    const response = await fetch(requestUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${settings.knowhowApiKey}`,
+        "X-Knowhow-Base-Url": settings.knowhowUrl,
       },
       body: JSON.stringify(payload),
     });
@@ -1170,7 +1200,7 @@ async function refreshKnowhowRefs(options = {}) {
     if (options.diagnostic) {
       setConfigDiagnostic(refs.length ? "success" : "warn", [
         refs.length ? `连接成功，已从 Knowhow API 召回 ${refs.length} 条推荐。` : "接口已返回，但没有解析到推荐结果。",
-        `请求地址：${makeKnowhowEndpoint(settings.knowhowUrl)}`,
+        `请求地址：${requestUrl}`,
         refs.length ? "状态：配置可用。" : "请检查 API 返回结构是否包含 data/results/items/documents 等结果数组。",
       ]);
     }
@@ -1184,9 +1214,9 @@ async function refreshKnowhowRefs(options = {}) {
       const isCors = error.message.includes("Failed to fetch") || error.message.includes("Load failed");
       setConfigDiagnostic("error", [
         isCors ? "浏览器未能直接调用 Knowhow API，常见原因是 CORS 跨域策略或网络不可达。" : `Knowhow API 调用失败：${error.message}`,
-        `请求地址：${makeKnowhowEndpoint(settings.knowhowUrl)}`,
+        `请求地址：${requestUrl}`,
         isCors
-          ? "解决方式：生产环境需要加后端代理，由后端携带 API Key 调用 Knowhow；或让 Knowhow API 允许当前站点跨域访问。"
+          ? "解决方式：切换为“后端代理转发”并填写代理接口地址；或让 Knowhow API 允许 https://simonlvpin.github.io 跨域访问。"
           : "请检查 API Key、Base URL、业务域、过滤条件和接口权限。",
       ]);
     }
@@ -1345,7 +1375,7 @@ function saveSettings(options = {}) {
   if (options.silent !== true) {
     setConfigDiagnostic("warn", [
       "配置已保存，正在进行 Knowhow 连通性测试...",
-      `当前请求地址：${makeKnowhowEndpoint(state.settings.knowhowUrl)}`,
+      `当前请求地址：${getKnowhowRequestUrl(state.settings) || "未配置"}`,
       state.settings.knowhowApiKey ? "已填写 API Key，正在验证接口是否可用。" : "API Key 为空，无法调用真实接口。",
     ]);
     showToast("Knowhow 平台配置已保存，正在测试连接。");
@@ -1360,6 +1390,8 @@ async function saveSettingsAndTest() {
 function renderSettings() {
   dom.knowhowUrl.value = state.settings.knowhowUrl;
   dom.knowhowAuth.value = state.settings.knowhowAuth;
+  dom.knowhowRequestMode.value = state.settings.knowhowRequestMode || "direct";
+  dom.knowhowProxyUrl.value = state.settings.knowhowProxyUrl || "";
   dom.knowhowApiKey.value = state.settings.knowhowApiKey || "";
   dom.businessDomain.value = state.settings.businessDomain;
   dom.datasets.value = state.settings.datasets;

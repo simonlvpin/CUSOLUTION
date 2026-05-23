@@ -73,6 +73,13 @@ http://localhost:8080
 
 如果诊断显示浏览器无法直接调用，通常不是前端逻辑问题，而是静态页面直连接口被 CORS 或网络策略拦截。生产环境需要通过后端代理调用 Knowhow API，或让 Knowhow API 允许部署域名跨域访问。
 
+GitHub Pages 是纯静态站点，若 Knowhow API 未允许 `https://simonlvpin.github.io` 跨域访问，请在平台配置里将请求模式切换为 `后端代理转发`，并填写代理接口地址。代理接口应将请求转发到：
+
+```text
+POST https://digitchat.fanruan.com/dataset/api/v1/retrieve
+Authorization: Bearer {api_key}
+```
+
 ## GitHub Pages 部署
 
 1. 创建 GitHub 仓库。
