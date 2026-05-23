@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TOB 客户诊断与方案生成 Agent</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">A</div>
+          <div>
+            <p class="eyebrow">TOB Solution Center</p>
+            <h1>客户诊断 Agent</h1>
+          </div>
+          <button class="collapse-btn" id="collapseSidebarBtn" type="button" aria-label="收缩导航">‹</button>
+        </div>
+
+        <nav class="nav" aria-label="主导航">
+          <button class="nav-item active" data-view="diagnosis">
+            <span class="icon">⌘</span>
+            <span>客户诊断</span>
+          </button>
+          <button class="nav-item" data-view="proposal">
+            <span class="icon">▤</span>
+            <span>方案生成</span>
+          </button>
+          <button class="nav-item" data-view="settings">
+            <span class="icon">⚙</span>
+            <span>平台配置</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-panel">
+          <p class="panel-title">当前流程</p>
+          <ol class="step-list">
+            <li class="done">录入客户并识别标签</li>
+            <li>上传并描述材料</li>
+            <li>运行客户诊断</li>
+            <li>生成并迭代 PPT</li>
+          </ol>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Presales Intelligence Workspace</p>
+            <h2 id="pageTitle">客户诊断</h2>
+          </div>
+          <div class="status-pill">
+            <span class="status-dot"></span>
+            <span id="agentStatus">等待输入</span>
+          </div>
+        </header>
+
+        <section class="view active" id="diagnosisView">
+          <div class="content-grid">
+            <section class="work-panel">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">Step 1</p>
+                  <h3>客户基础信息</h3>
+                </div>
+              </div>
+
+              <div class="form-grid">
+                <label class="field">
+                  <span>客户名称</span>
+                  <input id="customerName" type="text" placeholder="例如：华东某大型制造集团" />
+                </label>
+
+                <div class="field tag-field">
+                  <span>AI 识别客户标签</span>
+                  <div class="ai-tag-panel" id="customerTagPanel">
+                    <div class="tag-placeholder">输入客户名称后自动识别行业、地区、企业属性等标签</div>
+                  </div>
+                </div>
+
+                <label class="field">
+                  <span>项目阶段</span>
+                  <select id="projectStage">
+                    <option value="初次接触">初次接触</option>
+                    <option value="需求调研">需求调研</option>
+                    <option value="方案交流">方案交流</option>
+                    <option value="招投标准备">招投标准备</option>
+                    <option value="商务推进">商务推进</option>
+                  </select>
+                </label>
+
+                <label class="field">
+                  <span>预计输出</span>
+                  <select id="expectedOutput">
+                    <option value="客户诊断报告">客户诊断报告</option>
+                    <option value="诊断报告 + PPT 方案">诊断报告 + PPT 方案</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="section-heading middle">
+                <div>
+                  <p class="eyebrow">Step 2</p>
+                  <h3>客户与内部材料</h3>
+                </div>
+                <button class="secondary-btn" id="addMaterialBtn" type="button">
+                  <span>＋</span>
+                  添加材料
+                </button>
+              </div>
+
+              <div class="upload-zone" id="dropZone">
+                <input
+                  id="fileInput"
+                  type="file"
+                  multiple
+                  accept=".doc,.docx,.ppt,.pptx,.pdf,.xls,.xlsx,.csv,.txt"
+                />
+                <div>
+                  <strong>拖拽或选择 Word / PPT / PDF / Excel 材料</strong>
+                  <p>每份材料必须补充描述，Agent 会结合文件名、类型、描述和整体信息进行诊断。</p>
+                </div>
+              </div>
+
+              <div class="material-list" id="materialList"></div>
+
+              <label class="field textarea-field">
+                <span>整体信息与售前判断</span>
+                <textarea
+                  id="overallNotes"
+                  rows="7"
+                  placeholder="例如：客户近期在做集团经营分析体系升级，现有报表分散，数据口径不一致，业务部门希望提升经营会材料准备效率..."
+                ></textarea>
+              </label>
+
+              <div class="action-row">
+                <button class="primary-btn" id="runDiagnosisBtn" type="button">运行客户诊断</button>
+                <button class="ghost-btn" id="loadSampleBtn" type="button">填入示例</button>
+              </div>
+
+              <div class="analysis-progress hidden" id="analysisProgress">
+                <div class="progress-topline">
+                  <strong id="progressTitle">准备分析</strong>
+                  <span id="progressPercent">0%</span>
+                </div>
+                <div class="progress-track">
+                  <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <ol class="progress-steps" id="progressSteps">
+                  <li data-step="read">读取客户材料</li>
+                  <li data-step="parse">解析文件内容</li>
+                  <li data-step="extract">抽取关键词与需求场景</li>
+                  <li data-step="reason">综合售前判断生成诊断</li>
+                </ol>
+              </div>
+            </section>
+
+            <aside class="insight-panel">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">Diagnosis Output</p>
+                  <h3>诊断结果</h3>
+                </div>
+              </div>
+
+              <div class="empty-state" id="diagnosisEmpty">
+                <div class="empty-icon">◇</div>
+                <p>完成客户信息、材料描述和整体判断后，运行客户诊断。</p>
+              </div>
+
+              <div class="diagnosis-result hidden" id="diagnosisResult">
+                <article class="priority-summary">
+                  <p class="eyebrow">Core Issues</p>
+                  <h4>核心问题速览</h4>
+                  <div class="issue-grid" id="coreIssueGrid"></div>
+                </article>
+                <article class="result-block">
+                  <h4>重点标签</h4>
+                  <div class="tag-row" id="keywordTags"></div>
+                </article>
+                <article class="result-block">
+                  <h4>材料洞察</h4>
+                  <div class="insight-list" id="materialInsightList"></div>
+                </article>
+                <article class="result-block">
+                  <h4>建设背景</h4>
+                  <p id="backgroundText"></p>
+                </article>
+                <article class="result-block">
+                  <h4>诉求、痛点与目标</h4>
+                  <ul id="painList"></ul>
+                </article>
+                <article class="result-block">
+                  <h4>需求场景</h4>
+                  <div class="tag-row" id="scenarioTags"></div>
+                </article>
+                <article class="result-block">
+                  <h4>关键证据</h4>
+                  <ul id="evidenceList"></ul>
+                </article>
+                <article class="result-block">
+                  <h4>潜在风险与挑战</h4>
+                  <ul id="riskList"></ul>
+                </article>
+                <article class="result-block">
+                  <h4>下一步推进策略</h4>
+                  <ul id="strategyList"></ul>
+                </article>
+
+                <div class="ppt-decision">
+                  <label class="switch-field">
+                    <input id="needPpt" type="checkbox" checked />
+                    <span>需要输出 PPT 方案</span>
+                  </label>
+                  <button class="primary-btn" id="goProposalBtn" type="button">进入方案生成</button>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="view" id="proposalView">
+          <div class="content-grid proposal-grid">
+            <section class="work-panel">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">Solution Deck</p>
+                  <h3>PPT 解决方案框架</h3>
+                </div>
+                <button class="secondary-btn" id="generateProposalBtn" type="button">生成方案</button>
+              </div>
+
+              <div class="deck-preview" id="deckPreview"></div>
+
+              <div class="chapter-rationale" id="chapterRationale">
+                <p class="eyebrow">Writing Logic</p>
+                <h4>章节写作思路</h4>
+                <p>生成方案后，点击任一章节查看该页为什么这样写。</p>
+              </div>
+
+              <div class="slide-tabs" id="slideTabs"></div>
+
+              <label class="field textarea-field">
+                <span>综合调整意见</span>
+                <textarea
+                  id="globalProposalFeedback"
+                  rows="5"
+                  placeholder="例如：方案部分要拆成经营分析、资产运营、工程项目管理三个子方案；背景要多引用客户材料证据；目标要更量化..."
+                ></textarea>
+              </label>
+              <div class="action-row">
+                <button class="primary-btn" id="refineDeckBtn" type="button">执行 AGENT 完善 PPT</button>
+              </div>
+            </section>
+
+            <aside class="insight-panel">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">Iteration</p>
+                  <h3>反馈与调整</h3>
+                </div>
+              </div>
+
+              <div class="reference-box">
+                <div class="reference-heading">
+                  <h4>TOP 10 场景匹配参考</h4>
+                  <button class="mini-btn" id="refreshKnowhowBtn" type="button">刷新</button>
+                </div>
+                <p class="reference-status" id="knowhowStatus">诊断完成后，自动推荐最匹配的客户案例、业务场景和 PPT 方案。</p>
+                <div id="knowhowRefs"></div>
+              </div>
+
+              <label class="field textarea-field">
+                <span>进一步调整要求</span>
+                <textarea
+                  id="proposalFeedback"
+                  rows="6"
+                  placeholder="例如：突出集团经营分析场景，弱化技术架构，多增加阶段性成果和人员投入说明..."
+                ></textarea>
+              </label>
+
+              <div class="action-row stacked">
+                <button class="primary-btn" id="applyFeedbackBtn" type="button">应用反馈生成新版</button>
+                <button class="ghost-btn" id="confirmProposalBtn" type="button">确认方案符合要求</button>
+              </div>
+
+              <div class="version-list" id="versionList">
+                <p class="panel-title">方案版本</p>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="view" id="settingsView">
+          <section class="work-panel settings-panel">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Integration</p>
+                <h3>Knowhow 平台配置</h3>
+              </div>
+            </div>
+
+            <div class="form-grid">
+              <label class="field">
+                <span>Knowhow API Base URL</span>
+                <input id="knowhowUrl" type="url" placeholder="https://digitchat.fanruan.com/dataset/" />
+              </label>
+              <label class="field">
+                <span>访问方式</span>
+                <select id="knowhowAuth">
+                  <option value="API Token">API Token</option>
+                  <option value="SSO">SSO</option>
+                  <option value="内部网关">内部网关</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>API Key</span>
+                <input id="knowhowApiKey" type="password" placeholder="Bearer Token，仅保存在当前浏览器" />
+              </label>
+              <label class="field">
+                <span>业务域</span>
+                <select id="businessDomain">
+                  <option value="project">project</option>
+                  <option value="contract">contract</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>检索策略</span>
+                <select id="datasets">
+                  <option value="both">both</option>
+                  <option value="summary">summary</option>
+                  <option value="chunk">chunk</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>召回数量 top_k</span>
+                <input id="topK" type="number" min="1" max="500" value="20" />
+              </label>
+              <label class="field">
+                <span>行业过滤字段</span>
+                <input id="industryField" type="text" value="industry" />
+              </label>
+              <label class="field">
+                <span>场景标签字段</span>
+                <input id="scenarioField" type="text" value="tags" />
+              </label>
+              <label class="field">
+                <span>质量过滤</span>
+                <input id="qualityFilter" type="text" value="严选" />
+              </label>
+              <label class="field">
+                <span>目录过滤</span>
+                <input id="nodePathFilter" type="text" value="宣传物料" />
+              </label>
+            </div>
+
+            <label class="field textarea-field">
+              <span>检索规则说明</span>
+              <textarea id="knowhowRule" rows="6">根据客户名称、AI 识别出的行业标签、地区标签、企业属性、需求场景和痛点关键词，调用 POST api/v1/retrieve，召回公司历史客户、场景案例、PPT 解决方案和最佳实践，再由大模型提炼可复用方案结构。</textarea>
+            </label>
+
+            <div class="action-row">
+              <button class="primary-btn" id="saveSettingsBtn" type="button">保存配置</button>
+              <button class="ghost-btn" id="testKnowhowBtn" type="button">测试推荐</button>
+            </div>
+
+            <div class="config-diagnostics" id="configDiagnostics">
+              <p class="panel-title">连接诊断</p>
+              <div id="configDiagnosticText">尚未测试 Knowhow 连接。</div>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <div class="preview-modal hidden" id="previewModal" role="dialog" aria-modal="true" aria-labelledby="previewTitle">
+      <div class="preview-dialog">
+        <div class="preview-header">
+          <div>
+            <p class="eyebrow">PPT Preview</p>
+            <h3 id="previewTitle">方案预览</h3>
+          </div>
+          <button class="icon-btn" id="closePreviewBtn" type="button" aria-label="关闭预览">×</button>
+        </div>
+        <div class="preview-body" id="previewBody"></div>
+      </div>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
