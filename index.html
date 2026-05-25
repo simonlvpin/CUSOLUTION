@@ -402,12 +402,24 @@
 
             <div class="form-grid">
               <label class="field">
-                <span>客户标签识别大模型 Agent 接口</span>
-                <input id="customerTagAgentUrl" type="url" placeholder="例如：https://your-domain.com/api/customer/tags" />
+                <span>大模型 Base URL</span>
+                <input id="llmBaseUrl" type="url" value="https://it-ai.fineres.com/v1" />
               </label>
               <label class="field">
-                <span>客户标签 Agent API Key</span>
-                <input id="customerTagAgentApiKey" type="password" placeholder="可选，仅保存在当前浏览器" />
+                <span>大模型模型名</span>
+                <input id="llmModel" type="text" value="deepseek-v4-pro" />
+              </label>
+              <label class="field">
+                <span>大模型 API Key</span>
+                <input id="llmApiKey" type="password" placeholder="默认使用公司大模型配置，仅保存在当前浏览器" />
+              </label>
+              <label class="field">
+                <span>客户标签专用 Agent 接口</span>
+                <input id="customerTagAgentUrl" type="url" placeholder="可选；为空时默认调用上方大模型" />
+              </label>
+              <label class="field">
+                <span>客户标签专用 Agent API Key</span>
+                <input id="customerTagAgentApiKey" type="password" placeholder="可选；为空时复用大模型 API Key" />
               </label>
               <label class="field">
                 <span>材料分析大模型 Agent 接口</span>
@@ -450,7 +462,7 @@
 
             <div class="config-diagnostics">
               <p class="panel-title">服务说明</p>
-              <p>客户标签 Agent 建议接收 JSON：customerName、context、prompt，并返回企业画像标签。材料分析 Agent 建议接收 multipart/form-data：payload 为客户信息 JSON，files 为上传文件。PPT 生成服务建议接收诊断结果、方案框架、选中 Knowhow 参考材料，并返回 pptx 文件、download_url 或 base64。</p>
+              <p>客户标签默认调用上方 OpenAI 兼容大模型接口 `/chat/completions`，返回企业画像标签；如配置专用 Agent，则改为调用专用接口。材料分析 Agent 建议接收 multipart/form-data：payload 为客户信息 JSON，files 为上传文件。PPT 生成服务建议接收诊断结果、方案框架、选中 Knowhow 参考材料，并返回 pptx 文件、download_url 或 base64。</p>
             </div>
           </section>
         </section>
@@ -472,6 +484,7 @@
       </div>
     </div>
 
+    <script src="./config.local.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
     <script src="./app.js"></script>
   </body>

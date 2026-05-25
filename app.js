@@ -12,6 +12,9 @@ const defaultSettings = {
   scenarioField: "tags",
   qualityFilter: "",
   nodePathFilter: "",
+  llmBaseUrl: "https://it-ai.fineres.com/v1",
+  llmModel: "deepseek-v4-pro",
+  llmApiKey: "",
   customerTagAgentUrl: "",
   customerTagAgentApiKey: "",
   customerTagAgentPrompt:
@@ -28,7 +31,19 @@ const defaultSettings = {
     "根据客户名称、AI 识别出的行业标签、地区标签、企业属性、需求场景和痛点关键词，调用 POST api/v1/retrieve，召回公司历史客户、场景案例、PPT 解决方案和最佳实践，再由大模型提炼可复用方案结构。",
 };
 
+function mergeSettings(...sources) {
+  return sources.reduce((merged, source) => {
+    Object.entries(source || {}).forEach(([key, value]) => {
+      if (value === "" && merged[key]) return;
+      if (value === undefined || value === null) return;
+      merged[key] = value;
+    });
+    return merged;
+  }, {});
+}
+
 const savedSettings = JSON.parse(localStorage.getItem("agentSettings") || "null") || {};
+const runtimeSettings = window.CUSOLUTION_DEFAULT_CONFIG || {};
 
 const state = {
   materials: [],
@@ -41,7 +56,7 @@ const state = {
   customerTags: [],
   customerTagMode: "local",
   materialAnalysis: null,
-  settings: { ...defaultSettings, ...savedSettings },
+  settings: mergeSettings(defaultSettings, runtimeSettings, savedSettings),
 };
 
 const scenarioLibrary = {
@@ -149,6 +164,9 @@ const dom = {
   scenarioField: document.querySelector("#scenarioField"),
   qualityFilter: document.querySelector("#qualityFilter"),
   nodePathFilter: document.querySelector("#nodePathFilter"),
+  llmBaseUrl: document.querySelector("#llmBaseUrl"),
+  llmModel: document.querySelector("#llmModel"),
+  llmApiKey: document.querySelector("#llmApiKey"),
   customerTagAgentUrl: document.querySelector("#customerTagAgentUrl"),
   customerTagAgentApiKey: document.querySelector("#customerTagAgentApiKey"),
   customerTagAgentPrompt: document.querySelector("#customerTagAgentPrompt"),
@@ -296,6 +314,72 @@ function normalizeCustomerTagAgentResult(payload = {}) {
   return data && typeof data === "object" ? data : {};
 }
 
+function makeLlmChatEndpoint(baseUrl) {
+  const normalized = (baseUrl || "").trim().replace(/\/+$/, "");
+  if (!normalized) return "";
+  return normalized.endsWith("/chat/completions") ? normalized : `${normalized}/chat/completions`;
+}
+
+function extractJsonObject(text = "") {
+  const clean = String(text)
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+  try {
+    return JSON.parse(clean);
+  } catch (error) {
+    const match = clean.match(/\{[\s\S]*\}/);
+    if (!match) return { summary: clean };
+    try {
+      return JSON.parse(match[0]);
+    } catch (innerError) {
+      return { summary: clean };
+    }
+  }
+}
+
+async function callOpenAiCompatibleJson({ system, user, settings }) {
+  const endpoint = makeLlmChatEndpoint(settings.llmBaseUrl);
+  if (!endpoint || !settings.llmModel) {
+    throw new Error("大模型 Base URL 或模型名未配置。");
+  }
+  if (!settings.llmApiKey) {
+    throw new Error("大模型 API Key 未配置。");
+  }
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${settings.llmApiKey}`,
+    },
+    body: JSON.stringify({
+      model: settings.llmModel,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    throw new Error(`大模型 HTTP ${response.status}${errorText ? `：${errorText.slice(0, 160)}` : ""}`);
+  }
+
+  const data = await response.json();
+  const content =
+    data.choices?.[0]?.message?.content ||
+    data.output_text ||
+    data.content ||
+    data.result ||
+    "";
+  return typeof content === "object" ? content : extractJsonObject(content);
+}
+
 function pushTag(tags, seen, category, value, source) {
   if (!value) return;
   const values = Array.isArray(value) ? value : String(value).split(/[，,、;；/]/);
@@ -346,13 +430,41 @@ function normalizeCustomerTagsFromAgent(result, customerName) {
 async function callCustomerTagAgent(customerName) {
   const settings = state.settings;
   const endpoint = settings.customerTagAgentUrl?.trim();
-  if (!endpoint) return { tags: getLocalCustomerTags(), mode: "local" };
+  if (!endpoint) {
+    const result = await callOpenAiCompatibleJson({
+      settings,
+      system:
+        "你是面向 ToB 售前的企业画像识别 Agent。只输出 JSON，不输出 Markdown。需要基于客户名称和上下文识别行业、地区、企业属性、上市状态、集团规模等标签；不确定的信息请标注待核验。",
+      user: JSON.stringify(
+        {
+          customerName,
+          context: getCustomerTagContext(),
+          prompt: settings.customerTagAgentPrompt,
+          expected_schema: {
+            industry: "行业标签",
+            region: "地区",
+            ownership: "央国企/地方国企/民企等企业属性",
+            market: "上市公司/非上市/待核验",
+            scale: "集团型客户等规模标签",
+            aliases: ["企业别名"],
+            confidence: 0.8,
+            reason: "识别依据",
+          },
+        },
+        null,
+        2,
+      ),
+    });
+    return { tags: normalizeCustomerTagsFromAgent(result, customerName), mode: "llm" };
+  }
 
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(settings.customerTagAgentApiKey ? { Authorization: `Bearer ${settings.customerTagAgentApiKey}` } : {}),
+      ...(settings.customerTagAgentApiKey || settings.llmApiKey
+        ? { Authorization: `Bearer ${settings.customerTagAgentApiKey || settings.llmApiKey}` }
+        : {}),
     },
     body: JSON.stringify({
       customerName,
@@ -407,7 +519,7 @@ function refreshCustomerTagsWithAgent(options = {}) {
     const requestId = uid();
     refreshCustomerTagsWithAgent.latestRequestId = requestId;
 
-    if (state.settings.customerTagAgentUrl) {
+    if (state.settings.customerTagAgentUrl || state.settings.llmApiKey) {
       renderCustomerTagLoading();
     }
 
@@ -1600,6 +1712,9 @@ function getConfiguredSettings() {
     scenarioField: dom.scenarioField.value.trim() || state.settings.scenarioField,
     qualityFilter: dom.qualityFilter.value.trim(),
     nodePathFilter: dom.nodePathFilter.value.trim(),
+    llmBaseUrl: dom.llmBaseUrl.value.trim() || state.settings.llmBaseUrl || defaultSettings.llmBaseUrl,
+    llmModel: dom.llmModel.value.trim() || state.settings.llmModel || defaultSettings.llmModel,
+    llmApiKey: dom.llmApiKey.value.trim() || state.settings.llmApiKey || "",
     customerTagAgentUrl: dom.customerTagAgentUrl.value.trim(),
     customerTagAgentApiKey: dom.customerTagAgentApiKey.value.trim() || state.settings.customerTagAgentApiKey || "",
     customerTagAgentPrompt: dom.customerTagAgentPrompt.value.trim() || state.settings.customerTagAgentPrompt,
@@ -2329,6 +2444,9 @@ function renderSettings() {
   dom.scenarioField.value = state.settings.scenarioField;
   dom.qualityFilter.value = state.settings.qualityFilter || "";
   dom.nodePathFilter.value = state.settings.nodePathFilter || "";
+  dom.llmBaseUrl.value = state.settings.llmBaseUrl || defaultSettings.llmBaseUrl;
+  dom.llmModel.value = state.settings.llmModel || defaultSettings.llmModel;
+  dom.llmApiKey.value = state.settings.llmApiKey || "";
   dom.customerTagAgentUrl.value = state.settings.customerTagAgentUrl || "";
   dom.customerTagAgentApiKey.value = state.settings.customerTagAgentApiKey || "";
   dom.customerTagAgentPrompt.value = state.settings.customerTagAgentPrompt || defaultSettings.customerTagAgentPrompt;
