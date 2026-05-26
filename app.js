@@ -18,7 +18,7 @@ const defaultSettings = {
   customerTagAgentUrl: "",
   customerTagAgentApiKey: "",
   customerTagAgentPrompt:
-    "请根据客户名称和已输入上下文识别企业标签，输出 JSON：industry、region、ownership、market、scale、aliases、confidence、reason。标签需覆盖行业、地区、央国企/地方国企/民企、上市公司状态、集团型客户等。",
+    "请根据客户名称和上下文识别企业画像，必须输出 JSON。请至少包含：company_name（公司主体）、industry（行业）、region（地区）、ownership（央国企/地方国企/民企/上市公司主体属性）、market_status（上市/非上市/待核验）、business_tags（业务标签）、technology_tags（技术标签）、market_tags（市场标签）、aliases（企业别名）、confidence（0-1）、reason（识别依据）。如果能确认运营主体，请不要只返回“待确认”。如果某项不确定，请明确写待核验，但不要用它代替整体识别结果。",
   materialAgentUrl: "",
   materialAgentApiKey: "",
   materialAgentPrompt:
@@ -54,6 +54,7 @@ const state = {
   knowhowMode: "mock",
   selectedKnowhowIds: new Set(),
   customerTags: [],
+  customerProfile: null,
   customerTagMode: "local",
   materialAnalysis: null,
   settings: mergeSettings(defaultSettings, runtimeSettings, savedSettings),
@@ -109,6 +110,8 @@ const dom = {
   agentStatus: document.querySelector("#agentStatus"),
   customerName: document.querySelector("#customerName"),
   customerTagPanel: document.querySelector("#customerTagPanel"),
+  customerTagQuality: document.querySelector("#customerTagQuality"),
+  customerProfileSummary: document.querySelector("#customerProfileSummary"),
   projectStage: document.querySelector("#projectStage"),
   expectedOutput: document.querySelector("#expectedOutput"),
   fileInput: document.querySelector("#fileInput"),
@@ -235,14 +238,6 @@ function inferCustomerTags(customerName = "", extraText = "") {
     }
   });
 
-  if (!tags.some((tag) => tag.category === "industry")) {
-    tags.push({ category: "industry", label: "行业待确认", source: "未配置标签识别 Agent" });
-  }
-
-  if (!tags.some((tag) => tag.category === "market")) {
-    tags.push({ category: "market", label: "上市状态待核验", source: "未配置标签识别 Agent" });
-  }
-
   if (customerName.includes("上海地产集团")) {
     const tags = [
       { category: "industry", label: "房地产与城投", source: "客户名称" },
@@ -268,7 +263,7 @@ function inferCustomerTags(customerName = "", extraText = "") {
 }
 
 function getPrimaryIndustry(tags = state.customerTags) {
-  return tags.find((tag) => tag.category === "industry")?.label || "行业待确认";
+  return tags.find((tag) => tag.category === "industry")?.label || "行业未识别";
 }
 
 function getTagsByCategory(category, tags = state.customerTags) {
@@ -277,7 +272,20 @@ function getTagsByCategory(category, tags = state.customerTags) {
 
 function renderCustomerTags() {
   if (!state.customerTags.length) {
-    dom.customerTagPanel.innerHTML = '<div class="tag-placeholder">输入客户名称后自动调用大模型识别行业、地区、企业属性等标签</div>';
+    const profile = state.customerProfile;
+    if (profile?.status === "error") {
+      dom.customerTagPanel.innerHTML = '<div class="tag-placeholder">未获取到有效企业画像，请检查大模型配置或重新识别</div>';
+      if (dom.customerTagQuality) {
+        dom.customerTagQuality.textContent = `识别失败 · ${profile.message || "核心字段缺失"}`;
+        dom.customerTagQuality.className = "tag-quality error";
+      }
+    } else {
+      dom.customerTagPanel.innerHTML = '<div class="tag-placeholder">输入客户名称后自动调用大模型识别行业、地区、企业属性等标签</div>';
+      if (dom.customerTagQuality) {
+        dom.customerTagQuality.textContent = "等待识别结果";
+        dom.customerTagQuality.className = "tag-quality";
+      }
+    }
     return;
   }
 
@@ -287,10 +295,82 @@ function renderCustomerTags() {
         `<span class="tag ${escapeHtml(tag.category)}" title="${escapeHtml(tag.source)}">${escapeHtml(tag.label)}</span>`,
     )
     .join("");
+  if (dom.customerTagQuality) {
+    const profile = buildTagQualityFromCurrentTags();
+    if (profile?.status === "success") {
+      dom.customerTagQuality.textContent = `识别成功 · 运营主体：${profile.companyName || "已识别"} · 行业：${profile.industry || "已识别"} · 上市状态：${profile.marketStatus || "已识别"} · 置信度：${Math.round((profile.confidence || 0) * 100)}%`;
+      dom.customerTagQuality.className = "tag-quality success";
+    } else if (profile?.status === "partial") {
+      dom.customerTagQuality.textContent = `识别部分成功 · ${profile.message || "部分标签仍待核验"}`;
+      dom.customerTagQuality.className = "tag-quality warn";
+    } else if (profile?.status === "error") {
+      dom.customerTagQuality.textContent = `识别失败 · ${profile.message || "未获取到有效企业画像"}`;
+      dom.customerTagQuality.className = "tag-quality error";
+    } else {
+      dom.customerTagQuality.textContent = "等待识别结果";
+      dom.customerTagQuality.className = "tag-quality";
+    }
+  }
+
+  if (dom.customerProfileSummary) {
+    const profile = buildTagQualityFromCurrentTags();
+    if (!profile) {
+      dom.customerProfileSummary.innerHTML = "";
+    } else {
+      const rows = [
+        ["公司主体", profile.companyName || "未识别"],
+        ["行业", profile.industry || "未识别"],
+        ["地区", profile.region || "未识别"],
+        ["企业属性", profile.ownership || "未识别"],
+        ["上市状态", profile.marketStatus || "未识别"],
+        ["置信度", profile.confidence ? `${Math.round(profile.confidence * 100)}%` : "未返回"],
+        ["识别依据", profile.reason || "未返回"],
+      ];
+      dom.customerProfileSummary.innerHTML = `
+        <div class="profile-summary-title">企业画像摘要</div>
+        <dl class="profile-summary-grid">
+          ${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}
+        </dl>
+      `;
+    }
+  }
 }
 
 function renderCustomerTagLoading(text = "正在调用大模型识别企业标签...") {
   dom.customerTagPanel.innerHTML = `<div class="tag-placeholder">${escapeHtml(text)}</div>`;
+  if (dom.customerTagQuality) {
+    dom.customerTagQuality.textContent = text;
+    dom.customerTagQuality.className = "tag-quality loading";
+  }
+}
+
+function buildTagQualityFromCurrentTags() {
+  const tags = state.customerTags || [];
+  const hasIndustry = tags.some((tag) => tag.category === "industry");
+  const hasMarket = tags.some((tag) => tag.category === "market");
+  const hasRegion = tags.some((tag) => tag.category === "region");
+  const hasOwnership = tags.some((tag) => tag.category === "ownership");
+  const companyName = state.customerProfile?.companyName || dom.customerName.value.trim();
+
+  if (state.customerProfile?.status === "success") return state.customerProfile;
+  if (hasIndustry || hasMarket || hasRegion || hasOwnership) {
+    return {
+      status: "partial",
+      companyName,
+      industry: hasIndustry ? tags.find((tag) => tag.category === "industry")?.label : "",
+      marketStatus: hasMarket ? tags.find((tag) => tag.category === "market")?.label : "",
+      confidence: state.customerProfile?.confidence || 0,
+      missing: [
+        !companyName ? "公司主体" : "",
+        !hasIndustry ? "行业" : "",
+        !hasRegion ? "地区" : "",
+        !hasOwnership ? "企业属性" : "",
+        !hasMarket ? "上市状态" : "",
+      ].filter(Boolean),
+      message: "未返回完整公司画像",
+    };
+  }
+  return state.customerProfile || null;
 }
 
 function getCustomerTagContext() {
@@ -384,7 +464,10 @@ function pushTag(tags, seen, category, value, source) {
   if (!value) return;
   const values = Array.isArray(value) ? value : String(value).split(/[，,、;；/]/);
   values
-    .map((item) => String(item).trim())
+    .map((item) => {
+      if (item && typeof item === "object") return item.label || item.name || item.value || item.title || "";
+      return String(item).trim();
+    })
     .filter(Boolean)
     .forEach((label) => {
       const key = `${category}:${label}`;
@@ -392,6 +475,21 @@ function pushTag(tags, seen, category, value, source) {
       tags.push({ category, label, source });
       seen.add(key);
     });
+}
+
+function firstText(...values) {
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      const item = value.find(Boolean);
+      if (item) return firstText(item);
+    } else if (value && typeof value === "object") {
+      const nested = value.label || value.name || value.value || value.title || value.text;
+      if (nested) return String(nested).trim();
+    } else if (value !== undefined && value !== null && String(value).trim()) {
+      return String(value).trim();
+    }
+  }
+  return "";
 }
 
 function normalizeCustomerTagsFromAgent(result, customerName) {
@@ -410,21 +508,71 @@ function normalizeCustomerTagsFromAgent(result, customerName) {
     });
   }
 
-  pushTag(tags, seen, "industry", result.industry || result.industryTag, source);
-  pushTag(tags, seen, "region", result.region || result.location || result.area, source);
-  pushTag(tags, seen, "ownership", result.ownership || result.ownershipTag || result.enterpriseProperty, source);
-  pushTag(tags, seen, "market", result.market || result.marketTag || result.listedStatus || result.isListed, source);
-  pushTag(tags, seen, "scale", result.scale || result.scaleTag, source);
+  const companyName = firstText(result.company_name, result.companyName, result.legal_name, result.subject, result.operator);
+  const industry = firstText(result.industry, result.industryTag, result.industry_label);
+  const region = firstText(result.region, result.location, result.area, result.city);
+  const ownership = firstText(result.ownership, result.ownershipTag, result.enterpriseProperty, result.company_type);
+  const marketStatus = firstText(result.market_status, result.market, result.marketTag, result.listedStatus, result.isListed);
+  const scale = firstText(result.scale, result.scaleTag);
+
+  pushTag(tags, seen, "company", companyName, source);
+  pushTag(tags, seen, "industry", industry, source);
+  pushTag(tags, seen, "region", region, source);
+  pushTag(tags, seen, "ownership", ownership, source);
+  pushTag(tags, seen, "market", marketStatus, source);
+  pushTag(tags, seen, "scale", scale, source);
   pushTag(tags, seen, "alias", result.aliases || result.alias, source);
 
-  if (!tags.length) return inferCustomerTags(customerName, getCustomerTagContext());
-  if (!tags.some((tag) => tag.category === "industry")) {
-    pushTag(tags, seen, "industry", "行业待确认", "大模型未返回行业");
-  }
-  if (!tags.some((tag) => tag.category === "market")) {
-    pushTag(tags, seen, "market", "上市状态待核验", "大模型未返回上市状态");
-  }
-  return tags.slice(0, 12);
+  const businessTags = normalizeArray(result.business_tags || result.businessTags);
+  const technologyTags = normalizeArray(result.technology_tags || result.technologyTags);
+  const marketTags = normalizeArray(result.market_tags || result.marketTags);
+  businessTags.forEach((tag) => pushTag(tags, seen, "business", tag, source));
+  technologyTags.forEach((tag) => pushTag(tags, seen, "technology", tag, source));
+  marketTags.forEach((tag) => pushTag(tags, seen, "market-position", tag, source));
+
+  const confidence = Number(result.confidence);
+  const complete = Boolean(
+    companyName &&
+      industry &&
+      region &&
+      ownership &&
+      marketStatus &&
+      businessTags.length &&
+      technologyTags.length &&
+      marketTags.length,
+  );
+  const hasUsefulCore = Boolean(companyName || industry || marketStatus || businessTags.length || technologyTags.length || marketTags.length);
+  const status = complete && confidence >= 0.5 ? "success" : hasUsefulCore ? "partial" : "error";
+  const missing = [];
+  if (!companyName) missing.push("公司主体");
+  if (!industry) missing.push("行业");
+  if (!region) missing.push("地区");
+  if (!ownership) missing.push("企业属性");
+  if (!marketStatus) missing.push("上市状态");
+  if (!businessTags.length) missing.push("业务标签");
+  if (!technologyTags.length) missing.push("技术标签");
+  if (!marketTags.length) missing.push("市场标签");
+
+  return {
+    tags: tags.slice(0, 16),
+    profile: {
+      status,
+      companyName,
+      industry,
+      region,
+      ownership,
+      marketStatus,
+      confidence: Number.isFinite(confidence) ? confidence : 0,
+      reason: result.reason || "",
+      missing,
+      message:
+        status === "success"
+          ? ""
+          : status === "partial"
+            ? `缺少 ${missing.join("、") || "部分标签"}`
+            : `未返回可用企业画像：${missing.join("、") || "核心标签缺失"}`,
+    },
+  };
 }
 
 async function callCustomerTagAgent(customerName) {
@@ -434,18 +582,24 @@ async function callCustomerTagAgent(customerName) {
     const result = await callOpenAiCompatibleJson({
       settings,
       system:
-        "你是面向 ToB 售前的企业画像识别 Agent。只输出 JSON，不输出 Markdown。需要基于客户名称和上下文识别行业、地区、企业属性、上市状态、集团规模等标签；不确定的信息请标注待核验。",
+        "你是面向 ToB 售前的企业画像识别 Agent。只输出 JSON，不输出 Markdown。需要基于客户名称和上下文识别公司主体、行业、地区、企业属性、上市状态、业务标签、技术标签和市场标签；不确定的信息请标注待核验，但不要把待确认当成最终结果。",
       user: JSON.stringify(
         {
           customerName,
           context: getCustomerTagContext(),
           prompt: settings.customerTagAgentPrompt,
+          example_for_quality:
+            "例如客户名称为“墨迹天气”时，应识别到运营主体北京墨迹风云科技股份有限公司、非上市、商业气象服务/科学研究和技术服务业、工具类 App、B 端气象服务、AI+气象、国民级天气 App 等，而不是只输出行业待确认或上市状态待核验。",
           expected_schema: {
+            company_name: "公司主体",
             industry: "行业标签",
             region: "地区",
             ownership: "央国企/地方国企/民企等企业属性",
             market: "上市公司/非上市/待核验",
-            scale: "集团型客户等规模标签",
+            market_status: "上市状态",
+            business_tags: ["业务标签"],
+            technology_tags: ["技术标签"],
+            market_tags: ["市场标签"],
             aliases: ["企业别名"],
             confidence: 0.8,
             reason: "识别依据",
@@ -455,7 +609,8 @@ async function callCustomerTagAgent(customerName) {
         2,
       ),
     });
-    return { tags: normalizeCustomerTagsFromAgent(result, customerName), mode: "llm" };
+    const normalized = normalizeCustomerTagsFromAgent(result, customerName);
+    return { ...normalized, mode: "llm" };
   }
 
   const response = await fetch(endpoint, {
@@ -471,10 +626,15 @@ async function callCustomerTagAgent(customerName) {
       context: getCustomerTagContext(),
       prompt: settings.customerTagAgentPrompt,
       expected_schema: {
+        company_name: "公司主体",
         industry: "行业标签",
         region: "地区",
         ownership: "央国企/地方国企/民企等企业属性",
         market: "上市公司/非上市/待核验",
+        market_status: "上市状态",
+        business_tags: ["业务标签"],
+        technology_tags: ["技术标签"],
+        market_tags: ["市场标签"],
         scale: "集团型客户等规模标签",
         aliases: ["企业别名"],
         confidence: 0.8,
@@ -491,12 +651,14 @@ async function callCustomerTagAgent(customerName) {
   const contentType = response.headers.get("content-type") || "";
   const raw = contentType.includes("application/json") ? await response.json() : await response.text();
   const result = normalizeCustomerTagAgentResult(raw);
-  return { tags: normalizeCustomerTagsFromAgent(result, customerName), mode: "agent" };
+  const normalized = normalizeCustomerTagsFromAgent(result, customerName);
+  return { ...normalized, mode: "agent" };
 }
 
 function refreshCustomerTags() {
   state.customerTagMode = "local";
   state.customerTags = getLocalCustomerTags();
+  state.customerProfile = buildTagQualityFromCurrentTags();
   renderCustomerTags();
 }
 
@@ -505,6 +667,7 @@ function refreshCustomerTagsWithAgent(options = {}) {
   window.clearTimeout(refreshCustomerTagsWithAgent.timer);
   if (!customerName) {
     state.customerTags = [];
+    state.customerProfile = null;
     state.customerTagMode = "empty";
     renderCustomerTags();
     return Promise.resolve();
@@ -527,17 +690,28 @@ function refreshCustomerTagsWithAgent(options = {}) {
       const result = await callCustomerTagAgent(requestName);
       if (refreshCustomerTagsWithAgent.latestRequestId !== requestId || dom.customerName.value.trim() !== requestName) return;
       state.customerTagMode = result.mode;
-      state.customerTags = result.tags;
+      state.customerTags = result.tags || [];
+      state.customerProfile = result.profile || null;
       renderCustomerTags();
-      if (result.mode === "local" && options.notify !== false) {
+      if (result.profile?.status === "error" && options.notify !== false) {
+        showToast(`客户标签识别失败：${result.profile.message || "核心标签缺失"}`);
+      } else if (result.profile?.status === "partial" && options.notify !== false) {
+        showToast(`客户标签部分识别完成：${result.profile.message || "仍有标签待核验"}`);
+      } else if (result.mode === "local" && options.notify !== false) {
         showToast("未配置客户标签识别 Agent，已使用本地规则兜底。");
       }
     } catch (error) {
       if (refreshCustomerTagsWithAgent.latestRequestId !== requestId) return;
       state.customerTagMode = "fallback";
       state.customerTags = getLocalCustomerTags();
+      state.customerProfile = {
+        status: state.customerTags.length ? "partial" : "error",
+        message: error.message,
+        confidence: 0,
+        missing: ["企业画像"],
+      };
       renderCustomerTags();
-      showToast(`客户标签 Agent 调用失败，已使用本地规则兜底：${error.message}`);
+      showToast(`客户标签 Agent 调用失败，当前视为识别失败：${error.message}`);
     }
   };
 
@@ -2564,3 +2738,15 @@ renderSettings();
 bindEvents();
 renderVersions();
 refreshCustomerTagsWithAgent({ immediate: true, notify: false });
+
+window.CUSOLUTION_DEBUG = {
+  normalizeCustomerTagsFromAgent,
+  buildTagQualityFromCurrentTags,
+  async testCustomerProfile(customerName, result) {
+    const normalized = normalizeCustomerTagsFromAgent(result, customerName);
+    state.customerTags = normalized.tags;
+    state.customerProfile = normalized.profile;
+    renderCustomerTags();
+    return normalized;
+  },
+};

@@ -77,6 +77,8 @@
                   <div class="ai-tag-panel" id="customerTagPanel">
                     <div class="tag-placeholder">输入客户名称后自动调用大模型识别行业、地区、企业属性等标签</div>
                   </div>
+                  <div class="tag-quality" id="customerTagQuality">等待识别结果</div>
+                  <div class="profile-summary" id="customerProfileSummary"></div>
                 </div>
 
                 <label class="field">
@@ -452,7 +454,7 @@
 
             <label class="field textarea-field">
               <span>客户标签识别要求</span>
-              <textarea id="customerTagAgentPrompt" rows="4">请根据客户名称和已输入上下文识别企业标签，输出 JSON：industry、region、ownership、market、scale、aliases、confidence、reason。标签需覆盖行业、地区、央国企/地方国企/民企、上市公司状态、集团型客户等。</textarea>
+              <textarea id="customerTagAgentPrompt" rows="5">请根据客户名称和上下文识别企业画像，必须输出 JSON。请至少包含：company_name（公司主体）、industry（行业）、region（地区）、ownership（央国企/地方国企/民企/上市公司主体属性）、market_status（上市/非上市/待核验）、business_tags（业务标签）、technology_tags（技术标签）、market_tags（市场标签）、aliases（企业别名）、confidence（0-1）、reason（识别依据）。如果能确认运营主体，请不要只返回“待确认”。如果某项不确定，请明确写待核验，但不要用它代替整体识别结果。</textarea>
             </label>
 
             <label class="field textarea-field">
@@ -486,6 +488,6 @@
 
     <script src="./config.local.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
-    <script src="./app.js"></script>
+    <script src="./app.js?v=20260525-1"></script>
   </body>
 </html>
